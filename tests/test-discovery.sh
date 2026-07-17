@@ -57,6 +57,7 @@ case "$cmd" in
     echo "add $1" >> "$STUB_STATE/calls.log"
     ;;
   remove)
+    if [ -f "$STUB_STATE/fail_remove" ]; then exit 1; fi
     grep -vw "$1" "$hosts_file" > "$hosts_file.tmp" || true
     mv "$hosts_file.tmp" "$hosts_file"
     echo "remove $1" >> "$STUB_STATE/calls.log"
@@ -177,6 +178,26 @@ not_registered() { ! registered "$1"; }
   : > "$STUB_STATE/dns.txt"          # miss 1 again (counter was reset)
   run_pass
   assert "recovered worker not removed on later single miss" registered jellyfin-transcode-1
+  exit $TESTS_FAILED
+); TESTS_FAILED=$((TESTS_FAILED + $?))
+
+# --- test 7: failed remove is retried, host never orphaned ------------
+(
+  setup_case t7
+  echo "10.0.0.2 tasks.transcode-worker" > "$STUB_STATE/dns.txt"
+  echo "10.0.0.2 jellyfin-transcode-1" > "$STUB_STATE/ssh_map.txt"
+  run_pass
+  # worker vanishes and rffmpeg remove starts failing
+  : > "$STUB_STATE/dns.txt"
+  touch "$STUB_STATE/fail_remove"
+  run_pass
+  run_pass
+  assert "host still registered while remove fails" registered jellyfin-transcode-1
+  assert "host still tracked in state file while remove fails" grep -qw jellyfin-transcode-1 "$STATE_FILE"
+  # remove works again: next pass must clean up
+  rm -f "$STUB_STATE/fail_remove"
+  run_pass
+  assert "host removed once remove succeeds" not_registered jellyfin-transcode-1
   exit $TESTS_FAILED
 ); TESTS_FAILED=$((TESTS_FAILED + $?))
 

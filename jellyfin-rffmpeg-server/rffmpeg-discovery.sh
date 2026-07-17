@@ -84,9 +84,13 @@ run_pass() {
     if [[ -z "${healthy[$host]:-}" ]]; then
       count=$(( ${misses[$host]} + 1 ))
       if (( count >= REMOVE_AFTER_MISSES )); then
-        "$RFFMPEG_BIN" remove "$host"
-        log "removed $host after $count consecutive missed passes"
-        unset "misses[$host]"
+        if "$RFFMPEG_BIN" remove "$host"; then
+          log "removed $host after $count consecutive missed passes"
+          unset "misses[$host]"
+        else
+          log "ERROR: rffmpeg remove $host failed; will retry next pass"
+          misses["$host"]=$count
+        fi
       else
         misses["$host"]=$count
       fi
