@@ -12,7 +12,7 @@ You will realize the number of transcoded streams you may need is more than one 
 
 The architecture is composed of two primary services that communicate over a Docker overlay network:
 
--   **`jellyfin-server`**: The main Jellyfin instance. It does not perform transcodes itself but instead delegates them to available workers via SSH using `rffmpeg`. This service also runs an integrated **NFS server** to share the `/transcodes` and `/cache` directories, ensuring all nodes have access to the same temporary files. **Logs for `rffmpeg` are automatically viewable in the Jellyfin Dashboard under the "Logs" section.**
+-   **`jellyfin-server`**: The main Jellyfin instance. It does not perform transcodes itself but instead delegates them to available workers via SSH using `rffmpeg`. This service also runs an integrated **NFS server** to share the `/transcodes` and `/cache` directories, ensuring all nodes have access to the same temporary files. Workers are discovered automatically within seconds via Swarm DNS and an SSH health probe (see "Worker Discovery" below). **Logs for `rffmpeg` are automatically viewable in the Jellyfin Dashboard under the "Logs" section.**
 -   **`transcode-worker`**: The workhorses of the cluster. These are lightweight, scalable containers that listen for transcoding jobs from the server. You can add or remove workers on-the-fly to match your expected transcoding load.
 
 ## Host Setup Guide
@@ -176,6 +176,18 @@ A key feature of this project is the NFS server running *inside* the `jellyfin-s
 -   **Elevated Privileges**: Mounting an NFS share from within a container requires elevated privileges. This is why the `transcode-worker` service needs `cap_add: [SYS_ADMIN]` in the compose file. This allows it to run `mount -a` and connect to the server's exports.
 -   **The `fsid` Option**: The NFS exports in the `docker-compose.yml` file include an `fsid` (File System ID) option (e.g., `fsid=1`). This is required by NFSv4 to uniquely identify each exported directory, especially when the underlying host directories (`/config`, `/transcodes`, `/cache`) might reside on different physical disks or partitions. Without unique `fsid`s, the NFS server would fail to start.
 -   **Troubleshooting**: If workers fail to start, check their logs for `mount` errors. This usually indicates a problem with network connectivity to the server container or a lack of `SYS_ADMIN` capability.
+
+## Worker Discovery
+
+The `jellyfin-server` container runs a small discovery daemon that keeps the rffmpeg host list in sync with the actual state of the Swarm:
+
+1. Every 30 seconds it resolves `tasks.transcode-worker` via Swarm DNS, which returns the IPs of all *running* worker tasks in a single lookup.
+2. Each IP is probed over SSH (the same transport rffmpeg uses to dispatch jobs) and asked for its slot-stable hostname. A worker that is still starting up, or whose SSH daemon has died, fails the probe and is not registered.
+3. Healthy workers are added with `rffmpeg add`; workers that fail the probe on 2 consecutive passes are removed.
+
+This means new workers accept jobs within seconds of `docker service scale`, and a restarted `jellyfin-server` re-registers all workers almost immediately. Hosts you add manually with `rffmpeg add` are never touched by the daemon.
+
+You can tune the behavior with environment variables on the `jellyfin-server` service: `WORKER_TASKS_DNS` (default `tasks.transcode-worker`; change it if you rename the worker service), `DISCOVERY_INTERVAL` (seconds between passes, default `30`), and `REMOVE_AFTER_MISSES` (consecutive failed passes before removal, default `2`).
 
 ## Credits
 
