@@ -14,10 +14,9 @@ services:
       - NFS_LOG_LEVEL=DEBUG
       - NFS_EXPORT_0=/transcodes *(rw,sync,no_subtree_check,no_root_squash,insecure,fsid=1)
       - NFS_EXPORT_1=/cache *(rw,sync,no_subtree_check,no_root_squash,insecure,fsid=2)
-      # Worker discovery (defaults shown; uncomment only to override).
-      # WORKER_TASKS_DNS must match "tasks.<worker service name>" if you
-      # rename the transcode-worker service.
-      # - WORKER_TASKS_DNS=tasks.transcode-worker
+      # Worker discovery walks the slot hostnames (jellyfin-transcode-dev-N,
+      # from the worker service's hostname template) - nothing to configure.
+      # Defaults shown; uncomment only to override.
       # - DISCOVERY_INTERVAL=30
       # - REMOVE_AFTER_MISSES=2
     ports:

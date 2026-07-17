@@ -181,13 +181,13 @@ A key feature of this project is the NFS server running *inside* the `jellyfin-s
 
 The `jellyfin-server` container runs a small discovery daemon that keeps the rffmpeg host list in sync with the actual state of the Swarm:
 
-1. Every 30 seconds it resolves `tasks.transcode-worker` via Swarm DNS, which returns the IPs of all *running* worker tasks in a single lookup.
-2. Each IP is probed over SSH (the same transport rffmpeg uses to dispatch jobs) and asked for its slot-stable hostname. A worker that is still starting up, or whose SSH daemon has died, fails the probe and is not registered.
+1. Every 30 seconds it walks the slot-stable worker hostnames (`jellyfin-transcode-1`, `-2`, ... - the prefix is derived from the server's own hostname, so a `jellyfin-server-dev` instance looks for `jellyfin-transcode-dev-*` workers). The walk has no upper bound, so it works at any replica count, and it only stops after two consecutive slots that are both unreachable and unknown - a crashed slot mid-fleet does not end the walk.
+2. Each hostname is probed over SSH (the same transport rffmpeg uses to dispatch jobs). A worker that is still starting up, or whose SSH daemon has died, fails the probe and is not registered. Swarm DNS only resolves a slot hostname while that slot's task is running, and keeps resolving it to the replacement task after a container is replaced, so hostname registrations stay valid with no re-discovery.
 3. Healthy workers are added with `rffmpeg add`; workers that fail the probe on 2 consecutive passes are removed.
 
-This means new workers accept jobs within seconds of `docker service scale`, and a restarted `jellyfin-server` re-registers all workers almost immediately. Hosts you add manually with `rffmpeg add` are never touched by the daemon. Note that the server's nightly `rffmpeg clear` job still resets the full host list at midnight; discovered workers are re-added within seconds, but manually-added hosts must be re-added by hand after a clear or container restart.
+This means new workers accept jobs within seconds of `docker service scale`, and a restarted `jellyfin-server` re-registers all workers almost immediately. Nothing needs to be configured: discovery derives everything from the hostname convention in the compose file, regardless of what the worker *service* is named. Hosts you add manually with `rffmpeg add` are never touched by the daemon. Note that the server's nightly `rffmpeg clear` job still resets the full host list at midnight; discovered workers are re-added within seconds, but manually-added hosts must be re-added by hand after a clear or container restart.
 
-You can tune the behavior with environment variables on the `jellyfin-server` service: `WORKER_TASKS_DNS` (default `tasks.transcode-worker`; change it if you rename the worker service), `DISCOVERY_INTERVAL` (seconds between passes, default `30`), and `REMOVE_AFTER_MISSES` (consecutive failed passes before removal, default `2`).
+You can tune the behavior with environment variables on the `jellyfin-server` service: `DISCOVERY_INTERVAL` (seconds between passes, default `30`), `REMOVE_AFTER_MISSES` (consecutive failed passes before removal, default `2`), and `MAX_CONSECUTIVE_GAPS` (consecutive unknown dead slots that end the walk, default `2`).
 
 ## Credits
 

@@ -1,47 +1,58 @@
 #!/bin/bash
 # rffmpeg-discovery.sh - continuous worker discovery daemon.
 #
-# Replaces the old 15-minute cron ping-probe (rffmpeg-hostscale.sh).
-# Each pass:
-#   1. Resolve all running worker task IPs in one Swarm DNS lookup
-#      (tasks.<service> DNS round-robin returns only RUNNING tasks, so
-#      pending/failed slots never create discovery holes).
-#   2. SSH-probe each IP and ask the worker its slot-stable hostname.
-#      SSH is the probe because SSH is what rffmpeg actually uses: a
-#      worker that answers ping but whose sshd is down must not be added.
-#   3. Reconcile with the rffmpeg host DB: add healthy hostnames, remove
-#      daemon-managed hostnames unhealthy for REMOVE_AFTER_MISSES passes.
+# Discovery is by HOSTNAME CONVENTION, derived from the server's own
+# hostname - no configuration, any replica count (the proven design of the
+# original rffmpeg-hostscale.sh):
+#   server "jellyfin-server"     -> workers "jellyfin-transcode-1", -2, ...
+#   server "jellyfin-server-dev" -> workers "jellyfin-transcode-dev-1", ...
+# Slot hostnames come from the stack file's hostname template
+# ("jellyfin-transcode-{{.Task.Slot}}") and are resolvable via Swarm DNS
+# only while that slot's task is running, so registration by hostname stays
+# valid across container replacement with no re-discovery.
 #
-# The state file only tracks hosts THIS daemon added. Hosts registered
-# manually (rffmpeg add by hand) are never touched. State lives in /run,
-# which matches the rffmpeg DB lifecycle: both reset on container start.
+# Each pass walks slots 1..N with no upper bound: the walk continues while
+# slots are healthy OR known (registered in rffmpeg / tracked in the state
+# file - a crashed mid-fleet slot must not end the walk), and stops only
+# after MAX_CONSECUTIVE_GAPS consecutive slots that are both unreachable
+# and unknown, i.e. past the real end of the fleet.
+#
+# The probe is SSH, not ping: SSH is what rffmpeg actually uses, and a
+# worker that answers ping with a dead sshd must not be registered.
+# Reconciliation: healthy hostnames are added; daemon-managed hostnames
+# unhealthy for REMOVE_AFTER_MISSES passes are removed. The state file only
+# tracks hosts THIS daemon added - manually registered hosts are never
+# touched. State lives in /run, matching the rffmpeg DB lifecycle: both
+# reset on container start.
 #
 # SSH identity/host-key options come from /etc/ssh/ssh_config (set in the
 # Dockerfile); only probe-specific flags are passed here.
 
-WORKER_TASKS_DNS="${WORKER_TASKS_DNS:-tasks.transcode-worker}"
 DISCOVERY_INTERVAL="${DISCOVERY_INTERVAL:-30}"
 REMOVE_AFTER_MISSES="${REMOVE_AFTER_MISSES:-2}"
+MAX_CONSECUTIVE_GAPS="${MAX_CONSECUTIVE_GAPS:-2}"
 STATE_FILE="${STATE_FILE:-/run/rffmpeg/discovered_hosts}"
 RFFMPEG_BIN="${RFFMPEG_BIN:-/usr/local/bin/rffmpeg}"
 SSH_USER="${SSH_USER:-transcodessh}"
+
+# Derive the worker hostname prefix from this server's own hostname.
+if [[ "$(hostname)" == *"-dev" ]]; then
+  WORKER_PREFIX="jellyfin-transcode-dev-"
+else
+  WORKER_PREFIX="jellyfin-transcode-"
+fi
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') [discovery] $1"
 }
 
-# All IPs of currently RUNNING worker tasks, one per line.
-discover_ips() {
-  getent hosts "$WORKER_TASKS_DNS" | awk '{print $1}' | sort -u
-}
-
-# Probe a worker over SSH and print its slot-stable hostname.
-# Fails (nonzero) if sshd is unreachable or not accepting our key.
-# ConnectTimeout only bounds connection establishment; ServerAliveInterval/
-# ServerAliveCountMax bound a post-connect stall so a worker that completes
-# the handshake and then hangs can't stall the serial probe loop.
-probe_hostname() {
-  ssh -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 "$SSH_USER@$1" hostname 2>/dev/null
+# Probe a worker over SSH. Succeeds only if the hostname resolves, sshd
+# answers, and our key is accepted. ConnectTimeout bounds connection
+# establishment; ServerAliveInterval/ServerAliveCountMax bound a
+# post-connect stall so a worker that completes the handshake and then
+# hangs cannot stall the walk.
+probe_worker() {
+  ssh -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 "$SSH_USER@$1" true >/dev/null 2>&1
 }
 
 is_registered() {
@@ -51,25 +62,36 @@ is_registered() {
 # One reconcile cycle. Reads and rewrites STATE_FILE
 # (lines: "<hostname> <consecutive-miss-count>").
 run_pass() {
-  local ip host
-
-  local -A healthy=()
-  while read -r ip; do
-    [[ -z "$ip" ]] && continue
-    if host=$(probe_hostname "$ip") && [[ -n "$host" ]]; then
-      healthy["$host"]=1
-    else
-      log "worker at $ip did not answer SSH probe; skipping"
-    fi
-  done < <(discover_ips)
+  local host count slot gaps
 
   local -A misses=()
-  local count
   if [[ -f "$STATE_FILE" ]]; then
     while read -r host count; do
       [[ -n "$host" ]] && misses["$host"]="${count:-0}"
     done < "$STATE_FILE"
   fi
+
+  # Walk the slot hostnames.
+  local -A healthy=()
+  slot=1
+  gaps=0
+  while true; do
+    host="${WORKER_PREFIX}${slot}"
+    if probe_worker "$host"; then
+      healthy["$host"]=1
+      gaps=0
+    elif is_registered "$host" || [[ -n "${misses[$host]:-}" ]]; then
+      # Known slot that is currently unreachable: not the end of the
+      # fleet. The miss counter below handles its removal.
+      gaps=0
+    else
+      (( gaps++ ))
+      if (( gaps >= MAX_CONSECUTIVE_GAPS )); then
+        break
+      fi
+    fi
+    (( slot++ ))
+  done
 
   for host in "${!healthy[@]}"; do
     if ! is_registered "$host"; then
@@ -108,7 +130,7 @@ run_pass() {
 }
 
 main() {
-  log "starting worker discovery (dns=$WORKER_TASKS_DNS interval=${DISCOVERY_INTERVAL}s remove_after=$REMOVE_AFTER_MISSES misses)"
+  log "starting worker discovery (prefix=$WORKER_PREFIX interval=${DISCOVERY_INTERVAL}s remove_after=$REMOVE_AFTER_MISSES misses)"
   while true; do
     run_pass
     sleep "$DISCOVERY_INTERVAL"
