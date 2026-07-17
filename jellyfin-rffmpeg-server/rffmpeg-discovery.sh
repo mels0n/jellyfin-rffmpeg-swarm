@@ -37,8 +37,11 @@ discover_ips() {
 
 # Probe a worker over SSH and print its slot-stable hostname.
 # Fails (nonzero) if sshd is unreachable or not accepting our key.
+# ConnectTimeout only bounds connection establishment; ServerAliveInterval/
+# ServerAliveCountMax bound a post-connect stall so a worker that completes
+# the handshake and then hangs can't stall the serial probe loop.
 probe_hostname() {
-  ssh -o BatchMode=yes -o ConnectTimeout=3 "$SSH_USER@$1" hostname 2>/dev/null
+  ssh -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=3 -o ServerAliveCountMax=2 "$SSH_USER@$1" hostname 2>/dev/null
 }
 
 is_registered() {

@@ -185,7 +185,7 @@ The `jellyfin-server` container runs a small discovery daemon that keeps the rff
 2. Each IP is probed over SSH (the same transport rffmpeg uses to dispatch jobs) and asked for its slot-stable hostname. A worker that is still starting up, or whose SSH daemon has died, fails the probe and is not registered.
 3. Healthy workers are added with `rffmpeg add`; workers that fail the probe on 2 consecutive passes are removed.
 
-This means new workers accept jobs within seconds of `docker service scale`, and a restarted `jellyfin-server` re-registers all workers almost immediately. Hosts you add manually with `rffmpeg add` are never touched by the daemon.
+This means new workers accept jobs within seconds of `docker service scale`, and a restarted `jellyfin-server` re-registers all workers almost immediately. Hosts you add manually with `rffmpeg add` are never touched by the daemon. Note that the server's nightly `rffmpeg clear` job still resets the full host list at midnight; discovered workers are re-added within seconds, but manually-added hosts must be re-added by hand after a clear or container restart.
 
 You can tune the behavior with environment variables on the `jellyfin-server` service: `WORKER_TASKS_DNS` (default `tasks.transcode-worker`; change it if you rename the worker service), `DISCOVERY_INTERVAL` (seconds between passes, default `30`), and `REMOVE_AFTER_MISSES` (consecutive failed passes before removal, default `2`).
 
