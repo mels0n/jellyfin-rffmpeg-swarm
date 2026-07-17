@@ -10,7 +10,7 @@ You will realize the number of transcoded streams you may need is more than one 
 
 ## Overview
 
-The architecture is composed of two primary services that communicate over a secure Docker overlay network:
+The architecture is composed of two primary services that communicate over a Docker overlay network:
 
 -   **`jellyfin-server`**: The main Jellyfin instance. It does not perform transcodes itself but instead delegates them to available workers via SSH using `rffmpeg`. This service also runs an integrated **NFS server** to share the `/transcodes` and `/cache` directories, ensuring all nodes have access to the same temporary files. **Logs for `rffmpeg` are automatically viewable in the Jellyfin Dashboard under the "Logs" section.**
 -   **`transcode-worker`**: The workhorses of the cluster. These are lightweight, scalable containers that listen for transcoding jobs from the server. You can add or remove workers on-the-fly to match your expected transcoding load.
