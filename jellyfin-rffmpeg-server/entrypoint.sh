@@ -516,6 +516,13 @@ if [ ! -f /rffmpeg/rffmpeg.db ]; then
 else
     /usr/local/bin/rffmpeg clear
 fi
+
+# Start the continuous worker discovery daemon. Started here (not cron) so
+# workers are registered within seconds of container start: the rffmpeg DB
+# is ephemeral, and without this every server restart would begin with an
+# empty host list and transcode locally until discovery caught up.
+/rffmpeg-discovery.sh &
+echo "INFO: Worker discovery daemon started (PID $!)"
 #------
 
 # Create default Live TV configuration if it doesn't exist.

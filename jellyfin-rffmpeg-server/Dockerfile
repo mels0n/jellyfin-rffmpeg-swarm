@@ -134,13 +134,14 @@ RUN \
     -e 's;#   StrictHostKeyChecking ask;    StrictHostKeyChecking no;' \
     /etc/ssh/ssh_config
 
-# Copies the container's operational scripts and sets up a cron job.
-# The cron job periodically runs the host scaling script to discover and manage worker nodes.
-COPY --chown=transcodessh:users rffmpeg-hostscale.sh /rffmpeg-hostscale.sh
+# Copies the container's operational scripts.
+# Worker discovery runs as a continuous daemon started by the entrypoint
+# (rffmpeg-discovery.sh); cron only handles the nightly rffmpeg state clear.
+COPY --chown=root:root rffmpeg-discovery.sh /rffmpeg-discovery.sh
 COPY --chown=root:root entrypoint.sh /entrypoint.sh
 COPY --chown=root:root recording-post-proceessing.sh /recording-post-processing.sh
-RUN chmod +x /rffmpeg-hostscale.sh /entrypoint.sh /recording-post-processing.sh && \
-    (crontab -l 2>/dev/null; echo "*/15 * * * * /rffmpeg-hostscale.sh"; echo "0 0 * * * /usr/local/bin/rffmpeg clear") | crontab -
+RUN chmod +x /rffmpeg-discovery.sh /entrypoint.sh /recording-post-processing.sh && \
+    (crontab -l 2>/dev/null; echo "0 0 * * * /usr/local/bin/rffmpeg clear") | crontab -
 
 # ==============================================================================
 # PHASE 4: Install Drivers (Moved to end to avoid autoremove)
