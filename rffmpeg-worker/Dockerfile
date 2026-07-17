@@ -97,6 +97,11 @@ RUN curl -L -O https://github.com/intel/compute-runtime/releases/download/24.35.
 WORKDIR /
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY healthcheck.sh /healthcheck.sh
+RUN chmod +x /entrypoint.sh /healthcheck.sh
+
+# Defaults; the stack file overrides interval/timeout/retries/start_period.
+HEALTHCHECK --interval=30s --timeout=15s --retries=3 --start-period=600s \
+  CMD ["/healthcheck.sh"]
 
 ENTRYPOINT ["/entrypoint.sh"]

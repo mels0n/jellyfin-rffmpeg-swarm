@@ -12,8 +12,8 @@ services:
       # - TZ=
       # Set NFS log level to DEBUG for verbose output. Default is INFO.
       - NFS_LOG_LEVEL=DEBUG
-      - NFS_EXPORT_0=/transcodes *(rw,sync,no_subtree_check,no_root_squash,insecure)
-      - NFS_EXPORT_1=/cache *(rw,sync,no_subtree_check,no_root_squash,insecure)
+      - NFS_EXPORT_0=/transcodes *(rw,sync,no_subtree_check,no_root_squash,insecure,fsid=1)
+      - NFS_EXPORT_1=/cache *(rw,sync,no_subtree_check,no_root_squash,insecure,fsid=2)
     ports:
       - "8096:8096" # Jellyfin Web UI
     volumes:

@@ -99,52 +99,15 @@ if ! pgrep sshd > /dev/null; then
 fi
 log "SSHD started successfully."
 
-# The NFS monitoring loop now runs in the foreground and controls the container's lifecycle.
-FAIL_COUNT=0
-MAX_FAILS=3
-SLEEP_INTERVAL=5
-
-# Check if GPU is expected
-if [ -e /dev/dri/renderD128 ]; then
-    HAS_GPU=true
-else
-    HAS_GPU=false
-    log "INFO: No GPU device found. Skipping GPU health checks."
-fi
-GPU_FAIL_COUNT=0
-
+# NFS mount and GPU health are handled by the Docker HEALTHCHECK
+# (/healthcheck.sh); swarm replaces the task when it goes unhealthy, with
+# start_period grace so a replacement spawned into congestion is not executed
+# during startup. The entrypoint only supervises sshd, the process rffmpeg
+# actually connects to.
 while true; do
   if ! pgrep -x "sshd" >/dev/null; then
     bail "SSHD process is not running. Terminating container."
-  elif timeout 2 df -h >/dev/null 2>&1; then
-    if [ $FAIL_COUNT -gt 0 ]; then
-      log "INFO: NFS connection recovered after $FAIL_COUNT failed attempts."
-    fi
-    FAIL_COUNT=0
-  else
-    ((FAIL_COUNT++))
-    log "WARNING: NFS mount check failed. Consecutive failures: $FAIL_COUNT/$MAX_FAILS"
-    if [ $FAIL_COUNT -ge $MAX_FAILS ]; then
-      bail "NFS is unresponsive. Terminating container."
-    fi
   fi
-
-  # GPU Health Check
-  if [ "$HAS_GPU" = true ]; then
-      if head -c 0 /dev/dri/renderD128 >/dev/null 2>&1; then
-          if [ $GPU_FAIL_COUNT -gt 0 ]; then
-              log "INFO: GPU access recovered."
-          fi
-          GPU_FAIL_COUNT=0
-      else
-          ((GPU_FAIL_COUNT++))
-          log "WARNING: GPU access check failed. Consecutive failures: $GPU_FAIL_COUNT/$MAX_FAILS"
-          if [ $GPU_FAIL_COUNT -ge $MAX_FAILS ]; then
-              bail "GPU device is unresponsive or permission denied. Terminating container."
-          fi
-      fi
-  fi
-
-  sleep $SLEEP_INTERVAL &
+  sleep 10 &
   wait $!
 done
