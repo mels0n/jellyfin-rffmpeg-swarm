@@ -148,30 +148,79 @@ RUN chmod +x /rffmpeg-discovery.sh /entrypoint.sh /recording-post-processing.sh 
 # ==============================================================================
 WORKDIR /tmp/neo
 
-# Install Current Drivers (Gen12+)
-# We use 24.35.30872.22 because newer versions (25.x) require libc6 >= 2.38, which is not available in Debian Bookworm.
-RUN apt-get update && apt-get install -y curl && \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/intel/intel-graphics-compiler/releases/download/igc-1.0.17537.20/intel-igc-core_1.0.17537.20_amd64.deb && \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/intel/intel-graphics-compiler/releases/download/igc-1.0.17537.20/intel-igc-opencl_1.0.17537.20_amd64.deb && \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/intel/compute-runtime/releases/download/24.35.30872.22/intel-level-zero-gpu_1.3.30872.22_amd64.deb && \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/intel/compute-runtime/releases/download/24.35.30872.22/intel-opencl-icd_24.35.30872.22_amd64.deb && \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/intel/compute-runtime/releases/download/24.35.30872.22/libigdgmm12_22.5.0_amd64.deb && \
-    apt-get install -y --allow-downgrades ./*.deb && \
-    apt-mark manual intel-igc-core intel-igc-opencl intel-level-zero-gpu intel-opencl-icd libigdgmm12 && \
-    rm *.deb
+# Intel compute runtime (OpenCL + Level Zero) for Gen12+ QSV.
+#
+# INSTALL-OR-SKIP, NEVER DOWNGRADE. These five .debs are one matched release
+# train, so they are treated as a bundle: if the base image already carries a
+# newer build of any of them, the whole bundle is skipped and the base's stack
+# is left exactly as it is. The check runs before any download, so a base that
+# is already current costs zero network - this step was the CI's flakiest.
+#
+# The 24.35.x pin exists because 25.x needs libc6 >= 2.38, which Bookworm does
+# not have. A Trixie-based image already ships newer drivers and skips the
+# bundle on its own; nothing here needs editing when a base image moves.
+ARG IGC_VERSION=1.0.17537.20
+ARG NEO_VERSION=24.35.30872.22
+ARG GMM_VERSION=22.5.0
+ARG LEVEL_ZERO_VERSION=1.3.30872.22
+RUN set -eu; \
+    skip=""; \
+    for pair in "intel-igc-core:${IGC_VERSION}" \
+                "intel-igc-opencl:${IGC_VERSION}" \
+                "intel-opencl-icd:${NEO_VERSION}" \
+                "intel-level-zero-gpu:${LEVEL_ZERO_VERSION}" \
+                "libigdgmm12:${GMM_VERSION}"; do \
+        pkg="${pair%:*}"; want="${pair##*:}"; \
+        have="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"; \
+        if [ -n "$have" ] && ! dpkg --compare-versions "$want" gt "$have"; then \
+            echo "Intel bundle SKIPPED: $pkg $have is already >= $want"; \
+            skip=1; \
+        fi; \
+    done; \
+    if [ -n "$skip" ]; then \
+        echo "Base image ships a newer Intel stack - leaving it untouched."; \
+        exit 0; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl ca-certificates; \
+    for url in \
+        "https://github.com/intel/intel-graphics-compiler/releases/download/igc-${IGC_VERSION}/intel-igc-core_${IGC_VERSION}_amd64.deb" \
+        "https://github.com/intel/intel-graphics-compiler/releases/download/igc-${IGC_VERSION}/intel-igc-opencl_${IGC_VERSION}_amd64.deb" \
+        "https://github.com/intel/compute-runtime/releases/download/${NEO_VERSION}/intel-level-zero-gpu_${LEVEL_ZERO_VERSION}_amd64.deb" \
+        "https://github.com/intel/compute-runtime/releases/download/${NEO_VERSION}/intel-opencl-icd_${NEO_VERSION}_amd64.deb" \
+        "https://github.com/intel/compute-runtime/releases/download/${NEO_VERSION}/libigdgmm12_${GMM_VERSION}_amd64.deb"; \
+    do \
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O "$url"; \
+    done; \
+    apt-get install -y --no-install-recommends ./*.deb; \
+    apt-mark manual intel-igc-core intel-igc-opencl intel-level-zero-gpu intel-opencl-icd libigdgmm12; \
+    rm -f ./*.deb
 
-# Install Legacy Drivers (Gen8-11)
+# Legacy OpenCL runtime (Gen8-11), extracted to /opt/intel/legacy-opencl.
+# Nothing is installed into the system package set here, so this can never
+# displace the drivers above. curl is ensured locally because the block above
+# no longer guarantees it: it exits early when the bundle is skipped.
 WORKDIR /tmp/legacy_neo
-RUN curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/intel/compute-runtime/releases/download/24.35.30872.22/intel-opencl-icd-legacy1_24.35.30872.22_amd64.deb && \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O https://github.com/intel/compute-runtime/releases/download/24.35.30872.22/libigdgmm12_22.5.0_amd64.deb && \
-    mkdir -p extracted_icd && dpkg -x intel-opencl-icd-legacy1_24.35.30872.22_amd64.deb extracted_icd && \
-    mkdir -p extracted_gmm && dpkg -x libigdgmm12_22.5.0_amd64.deb extracted_gmm && \
-    mkdir -p /opt/intel/legacy-opencl && \
-    cp $(find extracted_icd -name "libigdrcl*.so*" | head -n 1) /opt/intel/legacy-opencl/libigdrcl_legacy.so && \
-    cp $(find extracted_gmm -name "libigdgmm*.so*" | head -n 1) /opt/intel/legacy-opencl/libigdgmm.so.12 && \
-    rm -rf /tmp/legacy_neo /tmp/neo && \
+RUN set -eu; \
+    if ! command -v curl >/dev/null 2>&1; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends curl ca-certificates; \
+    fi; \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O "https://github.com/intel/compute-runtime/releases/download/${NEO_VERSION}/intel-opencl-icd-legacy1_${NEO_VERSION}_amd64.deb"; \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -O "https://github.com/intel/compute-runtime/releases/download/${NEO_VERSION}/libigdgmm12_${GMM_VERSION}_amd64.deb"; \
+    mkdir -p extracted_icd extracted_gmm /opt/intel/legacy-opencl; \
+    dpkg -x "intel-opencl-icd-legacy1_${NEO_VERSION}_amd64.deb" extracted_icd; \
+    dpkg -x "libigdgmm12_${GMM_VERSION}_amd64.deb" extracted_gmm; \
+    cp "$(find extracted_icd -name 'libigdrcl*.so*' | head -n 1)" /opt/intel/legacy-opencl/libigdrcl_legacy.so; \
+    cp "$(find extracted_gmm -name 'libigdgmm*.so*' | head -n 1)" /opt/intel/legacy-opencl/libigdgmm.so.12; \
+    rm -rf /tmp/legacy_neo /tmp/neo; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /
+
+# Record which Jellyfin release this image was built from. Declared here, at the
+# very end, so changing it never invalidates the cache for the layers above.
+ARG JELLYFIN_VERSION
+LABEL org.opencontainers.image.version="${JELLYFIN_VERSION}"
 
 ENTRYPOINT ["/entrypoint.sh"]
