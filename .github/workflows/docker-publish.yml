@@ -15,169 +15,106 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      # The two images are independent: one failing must not cancel the other.
+      fail-fast: false
       matrix:
         service: [jellyfin-rffmpeg-server, rffmpeg-worker]
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          # fetch full history so git diff/show work reliably in CI
+          # Full history so the change detection below can diff against the
+          # commit this push started from.
           fetch-depth: 0
 
-      - name: Get changed files (service only)
-        id: changed-files
-        uses: tj-actions/changed-files@v44
-        with:
-          files: |
-            ${{ matrix.service }}/**
-
-      - name: Load versions file
-        id: load-versions
+      - name: Load Jellyfin version
         run: |
-          if [ -f versions.env ]; then
-            source versions.env || true
-            echo "JELLYFIN_STABLE=${JELLYFIN_STABLE:-}" >> $GITHUB_ENV
-            echo "JELLYFIN_UNSTABLE=${JELLYFIN_UNSTABLE:-}" >> $GITHUB_ENV
-          else
-            echo "JELLYFIN_STABLE=10.10.7" >> $GITHUB_ENV
-            echo "JELLYFIN_UNSTABLE=10.11.0-rc8" >> $GITHUB_ENV
-          fi
+          set -euo pipefail
+          test -f versions.env || { echo "::error::versions.env is missing"; exit 1; }
+          . ./versions.env
+          test -n "${JELLYFIN_VERSION:-}" || { echo "::error::JELLYFIN_VERSION is not set in versions.env"; exit 1; }
+          echo "JELLYFIN_VERSION=${JELLYFIN_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Initialize version change status
-        id: init-version-status
+      - name: Decide whether to build
+        id: decision
         run: |
-          echo "stable_changed=false" >> "$GITHUB_OUTPUT"
-          echo "unstable_changed=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request) base="${{ github.event.pull_request.base.sha }}" ;;
+            push)         base="${{ github.event.before }}" ;;
+            *)            base="" ;;
+          esac
 
-      - name: Compare versions.env across commits
-        id: compare-versions
-        if: github.event_name == 'push'
-        run: |
-          BEFORE=${{ github.event.before }}
-          AFTER=${{ github.sha }}
-
-          # If this is the first commit on the branch, and versions.env exists, mark both changed
-          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            if [ -f versions.env ]; then
-              echo "stable_changed=true" >> "$GITHUB_OUTPUT"
-              echo "unstable_changed=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-
-          # If versions.env was changed in this push, compare previous values to current safely
-          if git diff --name-only "$BEFORE" "$AFTER" | grep -q '^versions.env$'; then
-            PREV_STABLE=$(git show "$BEFORE":versions.env 2>/dev/null | grep '^JELLYFIN_STABLE=' | cut -d= -f2- || true)
-            PREV_UNSTABLE=$(git show "$BEFORE":versions.env 2>/dev/null | grep '^JELLYFIN_UNSTABLE=' | cut -d= -f2- || true)
-            CURR_STABLE=$(grep '^JELLYFIN_STABLE=' versions.env | cut -d= -f2- || echo "")
-            CURR_UNSTABLE=$(grep '^JELLYFIN_UNSTABLE=' versions.env | cut -d= -f2- || echo "")
-
-            if [ "$PREV_STABLE" != "$CURR_STABLE" ]; then echo "stable_changed=true" >> "$GITHUB_OUTPUT"; fi
-            if [ "$PREV_UNSTABLE" != "$CURR_UNSTABLE" ]; then echo "unstable_changed=true" >> "$GITHUB_OUTPUT"; fi
+          # New branch, force push, or a base commit we no longer have: build.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit - building."
+            echo "build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "stable_changed=false" >> "$GITHUB_OUTPUT"
-          echo "unstable_changed=false" >> "$GITHUB_OUTPUT"
-
-      - name: Make build decision
-        id: decision
-        run: |
-          any_changed=${{ steps.changed-files.outputs.any_changed }}
-          stable_changed=${{ steps.compare-versions.outputs.stable_changed || steps.init-version-status.outputs.stable_changed }}
-          unstable_changed=${{ steps.compare-versions.outputs.unstable_changed || steps.init-version-status.outputs.unstable_changed }}
-
-          build_stable=$([[ "$any_changed" == 'true' || "$stable_changed" == 'true' ]] && echo "true" || echo "false")
-          build_unstable=$([[ "$any_changed" == 'true' || "$unstable_changed" == 'true' ]] && echo "true" || echo "false")
-          build_any=$([[ "$build_stable" == 'true' || "$build_unstable" == 'true' ]] && echo "true" || echo "false")
-
-          echo "build_stable=${build_stable}" >> "$GITHUB_OUTPUT"
-          echo "build_unstable=${build_unstable}" >> "$GITHUB_OUTPUT"
-          echo "build_any=${build_any}" >> "$GITHUB_OUTPUT"
+          # No pipeline here on purpose: under `pipefail`, grep -q exiting early
+          # on a match can leave git with SIGPIPE and flip the result.
+          changed="$(git diff --name-only "$base" "${{ github.sha }}")"
+          if grep -qE "^(${{ matrix.service }}/|versions\.env$|\.github/workflows/docker-publish\.yml$)" <<<"$changed"; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing affecting ${{ matrix.service }} changed."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set image tags
         id: meta
-        if: steps.decision.outputs.build_any == 'true'
+        if: steps.decision.outputs.build == 'true'
         run: |
-          IMAGE_BASE_SERVER="ghcr.io/mels0n/jellyfin-rffmpeg-swarm-server"
-          IMAGE_BASE_WORKER="ghcr.io/mels0n/jellyfin-rffmpeg-swarm-worker"
-
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            if [ "${{ matrix.service }}" = "jellyfin-rffmpeg-server" ]; then
-              echo "tags_stable=${IMAGE_BASE_SERVER}:${{ env.JELLYFIN_STABLE }}" >> "$GITHUB_OUTPUT"
-              echo "tags_unstable=${IMAGE_BASE_SERVER}:${{ env.JELLYFIN_UNSTABLE }}" >> "$GITHUB_OUTPUT"
-            else
-              echo "tags_stable=${IMAGE_BASE_WORKER}:${{ env.JELLYFIN_STABLE }}" >> "$GITHUB_OUTPUT"
-              echo "tags_unstable=${IMAGE_BASE_WORKER}:${{ env.JELLYFIN_UNSTABLE }}" >> "$GITHUB_OUTPUT"
-            fi
-          elif [ "${{ github.ref }}" = "refs/heads/dev" ]; then
-            if [ "${{ matrix.service }}" = "jellyfin-rffmpeg-server" ]; then
-              echo "tags_stable=${IMAGE_BASE_SERVER}:${{ env.JELLYFIN_STABLE }}-dev" >> "$GITHUB_OUTPUT"
-              echo "tags_unstable=${IMAGE_BASE_SERVER}:${{ env.JELLYFIN_UNSTABLE }}-dev" >> "$GITHUB_OUTPUT"
-            else
-              echo "tags_stable=${IMAGE_BASE_WORKER}:${{ env.JELLYFIN_STABLE }}-dev" >> "$GITHUB_OUTPUT"
-              echo "tags_unstable=${IMAGE_BASE_WORKER}:${{ env.JELLYFIN_UNSTABLE }}-dev" >> "$GITHUB_OUTPUT"
-            fi
-          fi
-
-      - name: Set IMAGE_BASE env
-        if: steps.decision.outputs.build_any == 'true'
-        run: |
+          set -euo pipefail
           if [ "${{ matrix.service }}" = "jellyfin-rffmpeg-server" ]; then
-            echo "IMAGE_BASE=ghcr.io/mels0n/jellyfin-rffmpeg-swarm-server" >> $GITHUB_ENV
+            image="ghcr.io/mels0n/jellyfin-rffmpeg-swarm-server"
           else
-            echo "IMAGE_BASE=ghcr.io/mels0n/jellyfin-rffmpeg-swarm-worker" >> $GITHUB_ENV
+            image="ghcr.io/mels0n/jellyfin-rffmpeg-swarm-worker"
           fi
 
-      - name: Set up QEMU
-        if: steps.decision.outputs.build_any == 'true'
-        uses: docker/setup-qemu-action@v3
+          # main -> :<version> + :latest, dev -> :<version>-dev + :dev.
+          # The moving tag is what the compose files pull.
+          if [ "${{ github.ref }}" = "refs/heads/dev" ]; then
+            echo "tags=${image}:${JELLYFIN_VERSION}-dev,${image}:dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${image}:${JELLYFIN_VERSION},${image}:latest" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Docker Buildx
-        if: steps.decision.outputs.build_any == 'true'
-        uses: docker/setup-buildx-action@v3
+        if: steps.decision.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request' && steps.decision.outputs.build_any == 'true'
-        uses: docker/login-action@v3
+        if: steps.decision.outputs.build == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push STABLE image
-        if: steps.decision.outputs.build_stable == 'true'
-        uses: docker/build-push-action@v6
+      - name: Build and push
+        if: steps.decision.outputs.build == 'true'
+        uses: docker/build-push-action@v7
         with:
           context: ./${{ matrix.service }}
           file: ./${{ matrix.service }}/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags_stable }}
+          tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            JELLYFIN_VERSION=${{ env.JELLYFIN_STABLE }}
+            JELLYFIN_VERSION=${{ env.JELLYFIN_VERSION }}
+          # The layer cache lives in the Actions cache, so the prune below only
+          # reclaims runner disk - it does not throw the cache away.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-      - name: Build and push UNSTABLE image
-        if: steps.decision.outputs.build_unstable == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: ./${{ matrix.service }}
-          file: ./${{ matrix.service }}/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags_unstable }}
-          build-args: |
-            JELLYFIN_VERSION=${{ env.JELLYFIN_UNSTABLE }}
-
-      - name: Cleanup build cache
-        if: always() && steps.decision.outputs.build_any == 'true'
+      - name: Free runner disk
+        if: always() && steps.decision.outputs.build == 'true'
         run: |
           docker buildx prune --all --force
-
-      - name: Cleanup Docker images
-        if: always() && steps.decision.outputs.build_any == 'true'
-        run: |
           docker image prune -f
 
       - name: Print status
-        if: steps.decision.outputs.build_any != 'true'
-        run: echo "No changes detected for ${{ matrix.service }}. Skipping build."
+        if: steps.decision.outputs.build != 'true'
+        run: echo "No changes affecting ${{ matrix.service }}. Skipping build."

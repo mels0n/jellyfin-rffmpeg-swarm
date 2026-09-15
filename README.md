@@ -60,6 +60,19 @@ If you prefer to configure the host manually or need to troubleshoot specific st
 
 Follow these steps on your Docker Swarm manager node.
 
+### Image Tags
+
+CI publishes both images to GHCR on every push that touches them:
+
+| Branch | Tags | Used by |
+| --- | --- | --- |
+| `main` | `:<jellyfin-version>` and `:latest` | `docker-compose.yml` |
+| `dev` | `:<jellyfin-version>-dev` and `:dev` | `docker-compose.dev.yml` |
+
+The version comes from `JELLYFIN_VERSION` in `versions.env`. The compose files track the moving
+tags (`:latest` / `:dev`), so a `docker service update --force` picks up a new build; pin a
+version tag instead if you want to control exactly when a node moves.
+
 ### 1. Prepare Deployment Files
 Create a directory for your stack and download the compose file.
 ```bash
@@ -104,7 +117,7 @@ docker service scale jellyfin_transcode-worker=5
 
 ## Development Environment
 
-The "development" environment is designed for testing pre-release (Release Candidate or Unstable) versions of Jellyfin, not for development of this project itself. It allows you to run a separate, isolated Jellyfin instance using the `:dev` image tags, which are built using the `JELLYFIN_DEV` version specified in `versions.env`.
+The "development" environment runs a separate, isolated Jellyfin instance from the `:dev` image tags, built from the `dev` branch. Use it to try a change to this project, or a pre-release Jellyfin build, before it reaches production: set `JELLYFIN_VERSION` in `versions.env` on the `dev` branch to the release you want to test (for example `12.2-rc1`) and push. Production keeps whatever `main` says.
 
 This repository includes a `docker-compose.dev.yml` file for deploying this test environment.
 
