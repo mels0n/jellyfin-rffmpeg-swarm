@@ -81,8 +81,6 @@ What triggers a build:
     matching tag in GHCR yet, both images are built and published for it.
 -   **A code change.** Pushing a change under `jellyfin-rffmpeg-server/` or `rffmpeg-worker/`
     rebuilds that image against the current Jellyfin release.
--   **Weekly, on Mondays.** Rebuilds the current release so Debian and `jellyfin-ffmpeg`
-    security updates reach the published images even when the Jellyfin version has not moved.
 -   **Manually.** Run the *Docker Build and Publish* workflow from the Actions tab. It takes an
     optional `version` (to build a specific release, including a pre-release such as `12.2-rc1`)
     and a `force` toggle to rebuild something already published.

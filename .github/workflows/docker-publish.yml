@@ -11,9 +11,6 @@ on:
   schedule:
     # Daily: publish a new Jellyfin release as soon as it appears upstream.
     - cron: "0 6 * * *"
-    # Mondays: rebuild the current release so base-image and apt security
-    # updates reach the published images even when the version has not moved.
-    - cron: "0 7 * * 1"
   workflow_dispatch:
     inputs:
       version:
@@ -124,10 +121,7 @@ jobs:
               ;;
 
             schedule)
-              if [ "${{ github.event.schedule }}" = "0 7 * * 1" ]; then
-                build=true
-                reason="weekly rebuild of ${VERSION}"
-              elif published; then
+              if published; then
                 reason="${VERSION} is already published"
               else
                 build=true
