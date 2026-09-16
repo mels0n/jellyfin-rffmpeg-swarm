@@ -1,4 +1,6 @@
-ARG JELLYFIN_VERSION=10.10.7
+# Fallback for a local `docker build` with no --build-arg; CI always passes the
+# resolved upstream version explicitly.
+ARG JELLYFIN_VERSION=latest
 FROM docker.io/jellyfin/jellyfin:${JELLYFIN_VERSION}
 
 ARG RFFMPEG_URL=https://raw.githubusercontent.com/joshuaboniface/rffmpeg/master/rffmpeg

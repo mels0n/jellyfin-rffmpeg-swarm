@@ -1,6 +1,8 @@
 FROM debian:bookworm
 
-ARG JELLYFIN_VERSION=10.10.7
+# Fallback for a local `docker build` with no --build-arg; CI always passes the
+# resolved upstream version explicitly.
+ARG JELLYFIN_VERSION=latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -62,16 +62,31 @@ Follow these steps on your Docker Swarm manager node.
 
 ### Image Tags
 
-CI publishes both images to GHCR on every push that touches them:
+Both images are published to GHCR automatically. **The Jellyfin version is not configured
+anywhere in this repo** - CI resolves the newest stable `jellyfin/jellyfin` release from Docker
+Hub at build time, and uses GHCR to tell what has already been built.
 
 | Branch | Tags | Used by |
 | --- | --- | --- |
 | `main` | `:<jellyfin-version>` and `:latest` | `docker-compose.yml` |
 | `dev` | `:<jellyfin-version>-dev` and `:dev` | `docker-compose.dev.yml` |
 
-The version comes from `JELLYFIN_VERSION` in `versions.env`. The compose files track the moving
-tags (`:latest` / `:dev`), so a `docker service update --force` picks up a new build; pin a
-version tag instead if you want to control exactly when a node moves.
+What triggers a build:
+
+-   **A new Jellyfin release.** Checked daily. If the newest stable release upstream has no
+    matching tag in GHCR yet, both images are built and published for it.
+-   **A code change.** Pushing a change under `jellyfin-rffmpeg-server/` or `rffmpeg-worker/`
+    rebuilds that image against the current Jellyfin release.
+-   **Weekly, on Mondays.** Rebuilds the current release so Debian and `jellyfin-ffmpeg`
+    security updates reach the published images even when the Jellyfin version has not moved.
+-   **Manually.** Run the *Docker Build and Publish* workflow from the Actions tab. It takes an
+    optional `version` (to build a specific release, including a pre-release such as `12.2-rc1`)
+    and a `force` toggle to rebuild something already published.
+
+The compose files track the moving tags (`:latest` / `:dev`), so a `docker service update
+--force` picks up a new build. Pin a `:<version>` or a digest instead if you want to control
+exactly when a node moves - which is the safer choice for production, since new Jellyfin
+releases are published here without review.
 
 ### 1. Prepare Deployment Files
 Create a directory for your stack and download the compose file.
@@ -117,7 +132,7 @@ docker service scale jellyfin_transcode-worker=5
 
 ## Development Environment
 
-The "development" environment runs a separate, isolated Jellyfin instance from the `:dev` image tags, built from the `dev` branch. Use it to try a change to this project, or a pre-release Jellyfin build, before it reaches production: set `JELLYFIN_VERSION` in `versions.env` on the `dev` branch to the release you want to test (for example `12.2-rc1`) and push. Production keeps whatever `main` says.
+The "development" environment runs a separate, isolated Jellyfin instance from the `:dev` image tags, built from the `dev` branch. Use it to try a change to this project before it reaches production, or to test a specific Jellyfin release: run the *Docker Build and Publish* workflow manually against the `dev` branch with the `version` input set (for example `12.2-rc1`). Production is unaffected - it only ever tracks the newest stable release.
 
 This repository includes a `docker-compose.dev.yml` file for deploying this test environment.
 

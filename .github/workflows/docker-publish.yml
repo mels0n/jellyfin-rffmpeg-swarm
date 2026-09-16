@@ -1,15 +1,37 @@
 name: Docker Build and Publish
 
+# The Jellyfin version is never configured in this repo - it is resolved from
+# upstream at build time, and GHCR is the record of what has already been
+# built. There is no version file to keep in sync.
 on:
   push:
     branches: ["main", "dev"]
   pull_request:
     branches: ["main", "dev"]
+  schedule:
+    # Daily: publish a new Jellyfin release as soon as it appears upstream.
+    - cron: "0 6 * * *"
+    # Mondays: rebuild the current release so base-image and apt security
+    # updates reach the published images even when the version has not moved.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Jellyfin version to build (default: newest stable upstream)"
+        required: false
+        type: string
+      force:
+        description: "Build even if this version is already published"
+        required: false
+        type: boolean
+        default: false
 
-# Grant the workflow token the permissions required to publish to GHCR
 permissions:
   contents: read
   packages: write
+
+env:
+  OWNER: ${{ github.repository_owner }}
 
 jobs:
   build:
@@ -28,58 +50,127 @@ jobs:
           # commit this push started from.
           fetch-depth: 0
 
-      - name: Load Jellyfin version
+      - name: Resolve Jellyfin version
+        id: version
         run: |
           set -euo pipefail
-          test -f versions.env || { echo "::error::versions.env is missing"; exit 1; }
-          . ./versions.env
-          test -n "${JELLYFIN_VERSION:-}" || { echo "::error::JELLYFIN_VERSION is not set in versions.env"; exit 1; }
-          echo "JELLYFIN_VERSION=${JELLYFIN_VERSION}" >> "$GITHUB_ENV"
+          requested="${{ inputs.version }}"
+          if [ -n "$requested" ]; then
+            echo "Using requested version."
+            version="$requested"
+          else
+            # Newest stable tag upstream. The regex drops rc/preview/unstable
+            # and the dated per-build tags, leaving X.Y and X.Y.Z.
+            version="$(curl -fsSL 'https://hub.docker.com/v2/repositories/jellyfin/jellyfin/tags?page_size=100&ordering=last_updated' \
+              | jq -r '.results[].name' \
+              | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+              | sort -V | tail -n 1)"
+          fi
+          test -n "$version" || { echo "::error::could not resolve a Jellyfin version upstream"; exit 1; }
+          echo "Jellyfin version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether to build
         id: decision
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
+          if [ "${{ matrix.service }}" = "jellyfin-rffmpeg-server" ]; then
+            package="jellyfin-rffmpeg-swarm-server"
+          else
+            package="jellyfin-rffmpeg-swarm-worker"
+          fi
+
+          # Has this version already been built? GHCR is the source of truth;
+          # nothing about it is cached in the repo.
+          published() {
+            token="$(curl -fsSL "https://ghcr.io/token?scope=repository:${OWNER}/${package}:pull&service=ghcr.io" | jq -r .token)"
+            code="$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://ghcr.io/v2/${OWNER}/${package}/manifests/${VERSION}")"
+            [ "$code" = "200" ]
+          }
+
+          build=false
+          reason=""
+
           case "${{ github.event_name }}" in
-            pull_request) base="${{ github.event.pull_request.base.sha }}" ;;
-            push)         base="${{ github.event.before }}" ;;
-            *)            base="" ;;
+            push|pull_request)
+              if [ "${{ github.event_name }}" = "pull_request" ]; then
+                base="${{ github.event.pull_request.base.sha }}"
+              else
+                base="${{ github.event.before }}"
+              fi
+
+              # New branch, force push, or a base commit we no longer have.
+              if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+                build=true
+                reason="no usable base commit to diff against"
+              else
+                # No pipeline here on purpose: under pipefail, grep -q exiting
+                # early on a match can leave git with SIGPIPE and flip the result.
+                changed="$(git diff --name-only "$base" "${{ github.sha }}")"
+                if grep -qE "^(${{ matrix.service }}/|\.github/workflows/docker-publish\.yml$)" <<<"$changed"; then
+                  build=true
+                  reason="code changed"
+                else
+                  reason="nothing affecting ${{ matrix.service }} changed"
+                fi
+              fi
+              ;;
+
+            schedule)
+              if [ "${{ github.event.schedule }}" = "0 7 * * 1" ]; then
+                build=true
+                reason="weekly rebuild of ${VERSION}"
+              elif published; then
+                reason="${VERSION} is already published"
+              else
+                build=true
+                reason="${VERSION} is new upstream"
+              fi
+              ;;
+
+            workflow_dispatch)
+              if [ "${{ inputs.force }}" = "true" ]; then
+                build=true
+                reason="forced"
+              elif published; then
+                reason="${VERSION} is already published - re-run with force to rebuild"
+              else
+                build=true
+                reason="${VERSION} is not published yet"
+              fi
+              ;;
           esac
 
-          # New branch, force push, or a base commit we no longer have: build.
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "No usable base commit - building."
-            echo "build=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # No pipeline here on purpose: under `pipefail`, grep -q exiting early
-          # on a match can leave git with SIGPIPE and flip the result.
-          changed="$(git diff --name-only "$base" "${{ github.sha }}")"
-          if grep -qE "^(${{ matrix.service }}/|versions\.env$|\.github/workflows/docker-publish\.yml$)" <<<"$changed"; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Nothing affecting ${{ matrix.service }} changed."
-            echo "build=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "${{ matrix.service }}: build=${build} (${reason})"
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+          echo "- ${{ matrix.service }} (Jellyfin ${VERSION}): ${reason}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set image tags
         id: meta
         if: steps.decision.outputs.build == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           if [ "${{ matrix.service }}" = "jellyfin-rffmpeg-server" ]; then
-            image="ghcr.io/mels0n/jellyfin-rffmpeg-swarm-server"
+            image="ghcr.io/${OWNER}/jellyfin-rffmpeg-swarm-server"
           else
-            image="ghcr.io/mels0n/jellyfin-rffmpeg-swarm-worker"
+            image="ghcr.io/${OWNER}/jellyfin-rffmpeg-swarm-worker"
           fi
 
           # main -> :<version> + :latest, dev -> :<version>-dev + :dev.
           # The moving tag is what the compose files pull.
           if [ "${{ github.ref }}" = "refs/heads/dev" ]; then
-            echo "tags=${image}:${JELLYFIN_VERSION}-dev,${image}:dev" >> "$GITHUB_OUTPUT"
+            echo "tags=${image}:${VERSION}-dev,${image}:dev" >> "$GITHUB_OUTPUT"
           else
-            echo "tags=${image}:${JELLYFIN_VERSION},${image}:latest" >> "$GITHUB_OUTPUT"
+            echo "tags=${image}:${VERSION},${image}:latest" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx
@@ -103,7 +194,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            JELLYFIN_VERSION=${{ env.JELLYFIN_VERSION }}
+            JELLYFIN_VERSION=${{ steps.version.outputs.version }}
           # The layer cache lives in the Actions cache, so the prune below only
           # reclaims runner disk - it does not throw the cache away.
           cache-from: type=gha,scope=${{ matrix.service }}
@@ -114,7 +205,3 @@ jobs:
         run: |
           docker buildx prune --all --force
           docker image prune -f
-
-      - name: Print status
-        if: steps.decision.outputs.build != 'true'
-        run: echo "No changes affecting ${{ matrix.service }}. Skipping build."
