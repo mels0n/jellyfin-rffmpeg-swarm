@@ -1,0 +1,35 @@
+name: Repo Hygiene
+
+# Agent workflow artifacts (plans, briefs, review diffs, scratch output) are
+# local process output, not project documentation. This repo is public; they
+# do not belong in it. .gitignore stops them being added by accident, this
+# stops them being added on purpose.
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main", "dev"]
+
+permissions:
+  contents: read
+
+jobs:
+  no-agent-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fail if agent workflow artifacts are tracked
+        run: |
+          set -euo pipefail
+          # Paths that must never be tracked in this repository.
+          found="$(git ls-files | grep -E '(^|/)(\.superpowers|superpowers|\.sdd|sdd|scratch)/' || true)"
+          if [ -n "$found" ]; then
+            echo "::error::Agent workflow artifacts are tracked in this repository:"
+            printf '%s\n' "$found"
+            echo
+            echo "These are local process output and this repo is public."
+            echo "Remove them with 'git rm -r --cached <path>' and confirm .gitignore covers them."
+            exit 1
+          fi
+          echo "No agent workflow artifacts tracked."
