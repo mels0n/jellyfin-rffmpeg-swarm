@@ -1,0 +1,52 @@
+# Environment Variables
+
+Every variable the two images read, with the value that applies when it is not set.
+Nothing here needs to be set for a normal deployment; the defaults are the supported path.
+
+## jellyfin-server
+
+### NFS exports
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NFS_EXPORT_0`, `NFS_EXPORT_1`, ... | none | One `/etc/exports` line each. The stack file sets `/transcodes` (`fsid=1`) and `/cache` (`fsid=2`). Each export needs a **unique `fsid=`** or NFSv4 refuses to start. |
+| `NFS_LOG_LEVEL` | `INFO` | `DEBUG` for verbose NFS logging. |
+
+### Worker discovery
+
+Read by `rffmpeg-discovery.sh`. Discovery derives everything else from the server's own
+hostname, so there is nothing to configure at any replica count.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DISCOVERY_INTERVAL` | `30` | Seconds between reconcile passes. |
+| `REMOVE_AFTER_MISSES` | `2` | Consecutive failed passes before a daemon-added host is removed. |
+| `MAX_CONSECUTIVE_GAPS` | `2` | Consecutive slots that are both unreachable *and* unknown before the walk decides it has passed the end of the fleet. |
+| `SSH_USER` | `transcodessh` | User the SSH probe connects as. Must match the worker. |
+| `RFFMPEG_BIN` | `/usr/local/bin/rffmpeg` | Path to the rffmpeg binary. |
+| `STATE_FILE` | `/run/rffmpeg/discovered_hosts` | Tracks only hosts *this daemon* added, so manually added hosts are never touched. Lives in `/run`, so it resets on container start in step with the rffmpeg database. |
+
+### General
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TZ` | container default (UTC) | Timezone, e.g. `America/Chicago`. |
+| `UMASK` | `002` | Applied to files the server creates. |
+
+## transcode-worker
+
+The worker takes no configuration. Two values are derived at start-up rather than set:
+
+- **NFS server hostname** - `jellyfin-server`, or `jellyfin-server-dev` when the worker's
+  own hostname marks it as a dev-stack worker. It mounts `/transcodes` and `/cache` from
+  there via `/etc/fstab` (`rw,nolock,actimeo=1`).
+- **Slot hostname** - assigned by Swarm from the stack file's
+  `hostname: "jellyfin-transcode-{{.Task.Slot}}"` template. Discovery depends on this
+  template; see [ADR-0003](../adr/0003-worker-discovery-by-hostname-convention.md).
+
+## Build arguments
+
+| Argument | Default | Purpose |
+| --- | --- | --- |
+| `JELLYFIN_VERSION` | `latest` | Jellyfin release to build against. CI always passes the version it resolved from upstream; the default only applies to a local `docker build` with no `--build-arg`. |
+| `IGC_VERSION`, `NEO_VERSION`, `GMM_VERSION`, `LEVEL_ZERO_VERSION` | pinned in the Dockerfiles | The Intel compute-runtime release train. Installed only when newer than what the base image already has - see [ADR-0004](../adr/0004-intel-driver-install-or-skip.md). |

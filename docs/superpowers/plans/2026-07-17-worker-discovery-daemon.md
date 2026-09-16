@@ -1,5 +1,13 @@
 # Worker Discovery Daemon Implementation Plan
 
+> **SUPERSEDED - historical record, do not implement.** This plan specifies discovery via
+> `tasks.<service>` Swarm DNS. That design shipped, failed silently (it resolved zero hosts
+> when the service was named differently, and every transcode fell back to the Jellyfin
+> container while playback kept working), and was replaced the same day by discovery via
+> hostname convention. The `WORKER_TASKS_DNS` variable below no longer exists. See
+> [ADR-0003](../../adr/0003-worker-discovery-by-hostname-convention.md) for what was built
+> instead, and `jellyfin-rffmpeg-server/rffmpeg-discovery.sh` for the current design.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the 15-minute cron ping-probe worker discovery with a continuous daemon that discovers workers via Swarm DNS (`tasks.<service>`), verifies them with an SSH probe, and reconciles the rffmpeg host list every ~30 seconds — eliminating the up-to-15-minute zero-worker window after every server restart.

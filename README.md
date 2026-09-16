@@ -12,7 +12,7 @@ You will realize the number of transcoded streams you may need is more than one 
 
 The architecture is composed of two primary services that communicate over a Docker overlay network:
 
--   **`jellyfin-server`**: The main Jellyfin instance. It does not perform transcodes itself but instead delegates them to available workers via SSH using `rffmpeg`. This service also runs an integrated **NFS server** to share the `/transcodes` and `/cache` directories, ensuring all nodes have access to the same temporary files. Workers are discovered automatically within seconds via Swarm DNS and an SSH health probe (see "Worker Discovery" below). **Logs for `rffmpeg` are automatically viewable in the Jellyfin Dashboard under the "Logs" section.**
+-   **`jellyfin-server`**: The main Jellyfin instance. It does not perform transcodes itself but instead delegates them to available workers via SSH using `rffmpeg`. This service also runs an integrated **NFS server** to share the `/transcodes` and `/cache` directories, ensuring all nodes have access to the same temporary files. Workers are discovered automatically within seconds by hostname convention plus an SSH health probe (see "Worker Discovery" below). **Logs for `rffmpeg` are automatically viewable in the Jellyfin Dashboard under the "Logs" section.**
 -   **`transcode-worker`**: The workhorses of the cluster. These are lightweight, scalable containers that listen for transcoding jobs from the server. You can add or remove workers on-the-fly to match your expected transcoding load.
 
 ## Host Setup Guide
@@ -20,7 +20,9 @@ The architecture is composed of two primary services that communicate over a Doc
 The following steps must be performed on **all nodes** in your Docker Swarm cluster to ensure they are properly configured.
 
 ### 1. OS and Hardware
--   **Operating System**: A recent Debian or Ubuntu release.
+-   **Operating System**: A recent Ubuntu release. Debian works, but the automated
+    script installs Intel drivers from Intel's Ubuntu apt repository - on Debian, follow
+    the [manual guide](docs/how-to/manual-node-setup.md), which covers the difference.
 -   **CPU**: An Intel CPU that supports Quick Sync Video (QSV).
 -   **Storage**: A high-performance NVMe SSD is strongly recommended for the `/transcodes` and `/cache` directories. For best results, choose a drive with **TLC (Triple-Level Cell) NAND** and a **DRAM cache**. Video transcoding generates intense, sustained read/write I/O. Drives with a DRAM cache and higher-endurance NAND (like TLC) can handle these demanding workloads without performance degradation, preventing bottlenecks that cause stuttering or playback failure. Consumer-grade SATA SSDs or DRAM-less/QLC-based drives may not offer sufficient performance for multiple simultaneous transcodes.
 
@@ -38,12 +40,14 @@ We provide a script that handles all dependencies, kernel modules, OpenCL driver
     chmod +x setup-node.sh
     sudo ./setup-node.sh
     ```
-2.  **Reboot**: A reboot is required to finalize the AppArmor and kernel changes.
+2.  **Reboot if asked**: the script prompts before disabling AppArmor and tells you at
+    the end whether a reboot is needed. It is needed only when it had to change the
+    kernel boot parameters.
 
 #### Option B: Manual Setup
 If you prefer to configure the host manually or need to troubleshoot specific steps, please refer to the detailed guide:
 
-[**📄 Manual Node Setup Guide**](docs/manual-node-setup.md)
+[**📄 Manual Node Setup Guide**](docs/how-to/manual-node-setup.md)
 
 ### 3. Configure Docker Swarm
 -   Install Docker and initialize your Swarm cluster if you haven't already.
@@ -216,6 +220,61 @@ The `jellyfin-server` container runs a small discovery daemon that keeps the rff
 This means new workers accept jobs within seconds of `docker service scale`, and a restarted `jellyfin-server` re-registers all workers almost immediately. Nothing needs to be configured: discovery derives everything from the hostname convention in the compose file, regardless of what the worker *service* is named. Hosts you add manually with `rffmpeg add` are never touched by the daemon. Note that the server's nightly `rffmpeg clear` job still resets the full host list at midnight; discovered workers are re-added within seconds, but manually-added hosts must be re-added by hand after a clear or container restart.
 
 You can tune the behavior with environment variables on the `jellyfin-server` service: `DISCOVERY_INTERVAL` (seconds between passes, default `30`), `REMOVE_AFTER_MISSES` (consecutive failed passes before removal, default `2`), and `MAX_CONSECUTIVE_GAPS` (consecutive unknown dead slots that end the walk, default `2`).
+
+## Working on This Project
+
+### Layout
+
+| Path | What |
+| --- | --- |
+| `jellyfin-rffmpeg-server/` | Server image: Jellyfin + rffmpeg + the embedded NFS server + the discovery daemon |
+| `rffmpeg-worker/` | Worker image: `sshd` + `jellyfin-ffmpeg` + Intel drivers |
+| `setup-node.sh` | Host preparation, run once per Swarm node |
+| `docker-compose.yml` / `.dev.yml` | Production and dev stack files |
+| `tests/` | Test harness for the discovery daemon |
+| `docs/` | How-to, reference and decision records |
+
+### Build an image locally
+
+```bash
+docker build -t swarm-server:local ./jellyfin-rffmpeg-server
+docker build -t swarm-worker:local ./rffmpeg-worker
+```
+
+No arguments are needed: `JELLYFIN_VERSION` defaults to `latest`. Pass
+`--build-arg JELLYFIN_VERSION=12.1` to build against a specific release, as CI does.
+
+### Tests
+
+```bash
+bash tests/test-discovery.sh
+```
+
+The harness stubs `ssh` and `rffmpeg` on `PATH`, so it needs neither Docker nor a network.
+**It currently fails**: it still stubs the `getent` DNS lookup that the discovery daemon
+stopped performing when discovery moved to the hostname convention
+([ADR-0003](docs/adr/0003-worker-discovery-by-hostname-convention.md)), so every
+"worker discovered" assertion fails against a daemon that no longer calls it. The daemon
+itself is fine; the harness needs updating to drive the slot walk through the `ssh` stub.
+Nothing runs it in CI, which is why it went unnoticed.
+
+### Where secrets live
+
+Nothing secret is committed to this repository or baked into either image.
+
+-   **SSH keys** for server-to-worker dispatch are Docker Swarm secrets
+    (`jellyfin_rffmpeg_id_rsa` / `jellyfin_rffmpeg_id_rsa_pub`, plus `_dev` variants for
+    the dev stack), created with `docker secret create` and mounted at runtime. Delete the
+    key files from the host once the secrets exist.
+-   **CI** authenticates to GHCR with the workflow's built-in `GITHUB_TOKEN`. The
+    repository has no configured secrets and needs none.
+
+### Documentation
+
+-   [How-to: manual node setup](docs/how-to/manual-node-setup.md)
+-   [Reference: environment variables](docs/reference/environment-variables.md)
+-   [Architecture decision records](docs/adr/README.md) - why the non-obvious choices were
+    made, including the ones an agent or contributor would otherwise helpfully reintroduce
 
 ## Credits
 

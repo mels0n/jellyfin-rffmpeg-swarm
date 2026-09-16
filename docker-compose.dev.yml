@@ -19,6 +19,7 @@ services:
       # Defaults shown; uncomment only to override.
       # - DISCOVERY_INTERVAL=30
       # - REMOVE_AFTER_MISSES=2
+      # - MAX_CONSECUTIVE_GAPS=2
     ports:
       - "8097:8096" # Jellyfin Dev Web UI on a different port
     volumes:
