@@ -100,7 +100,7 @@ RUN apt-get -y update --fix-missing && \
     make && \
     make install && \
     cd / && \
-    printf "edl_out=1\noutput_edl=1\noutput_to_stdout=1\nverbose=10\n"  > /etc/comskip.ini && \
+    printf "edl_out=1\noutput_edl=1\noutput_to_stdout=1\nverbose=10\nlogo_max_percentage_of_screen=0.03\n" > /etc/comskip.ini && \
     # Removes build-time dependencies (like git) and clears apt caches to reduce image size.
     rm -rf /tmp/comchap_src /tmp/comskip_src && \
     apt-get purge -y --auto-remove wget git build-essential pkg-config autoconf automake && \

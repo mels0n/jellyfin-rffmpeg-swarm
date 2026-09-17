@@ -179,7 +179,13 @@ You can change this behavior from the Jellyfin dashboard by navigating to **Dash
 -   To use the default chapter mode, use: `"{path}" comchap`
 -   **Verbose Logging**: To get more detailed logs for troubleshooting, you can add the `--verbose` flag, e.g., `"{path}" comchap --verbose`. 
 
-Logs for all post-processing jobs are stored in `/config/log/` and are viewable directly in the **Jellyfin Dashboard** under the "Logs" section.
+Logs for all post-processing jobs are stored in `/config/log/` and are viewable directly in the **Jellyfin Dashboard** under the "Logs" section: `post-processing_<date>.log` is the daily job log, and each recording's full `comskip` log (with its EDL appended) is kept as `comskip_<date>_<recording>.log`. Jellyfin's log retention deletes them along with its own logs.
+
+Comskip runs with `logo_max_percentage_of_screen=0.03` so that a full-width score ticker is never mistaken for the network logo; a ticker that stays on screen through the ads would otherwise hide every commercial break.
+
+### One Folder per Recording
+
+Jellyfin records every non-series program of the same name into one shared folder, so repeated live events (for example every "Live: U.S. Open Cup Soccer") appear as a single item with one poster. After processing, the script moves each finished recording, its `.nfo`, and the guide artwork Jellyfin saved for it into a folder of its own under the recording path, so every recording is its own item with its own artwork. The displayed title still comes from the `.nfo`. Series recordings (`Season` folders) are left in Jellyfin's layout.
 
 ## Default Hardware Acceleration
 
