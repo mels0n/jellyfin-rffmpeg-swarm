@@ -11,6 +11,14 @@ Nothing here needs to be set for a normal deployment; the defaults are the suppo
 | --- | --- | --- |
 | `NFS_EXPORT_0`, `NFS_EXPORT_1`, ... | none | One `/etc/exports` line each. The stack file sets `/transcodes` (`fsid=1`) and `/cache` (`fsid=2`). Each export needs a **unique `fsid=`** or NFSv4 refuses to start. |
 | `NFS_LOG_LEVEL` | `INFO` | `DEBUG` for verbose NFS logging. |
+| `NFS_SERVER_THREAD_COUNT` | one per CPU | `rpc.nfsd` thread count. Must be a positive integer; the entrypoint refuses to start otherwise. |
+| `NFS_DISABLE_VERSION_3` | unset | Any non-empty value drops NFSv3 from nfsd, mountd and statd, leaving v4 only. The workers mount with v4, so this is safe to set. |
+| `NFS_ENABLE_KERBEROS` | unset | Only consulted at shutdown, where it terminates `rpc.svcgssd`. Nothing starts that daemon, so setting this has no effect. |
+
+`NFS_VERSION`, `NFS_PORT`, `NFS_PORT_MOUNTD`, `NFS_PORT_STATD_IN`, `NFS_PORT_STATD_OUT`,
+`NFS_ENABLE_NFSDCLD` and `NFS_NFSDCLD_STORAGE_DIR` are declared as names in `entrypoint.sh`
+but never read. The built-in values always apply: NFS 4.2 on port 2049, mountd 32767,
+statd 32765 in / 32766 out, no nfsdcld.
 
 ### Worker discovery
 
@@ -48,5 +56,6 @@ The worker takes no configuration. Two values are derived at start-up rather tha
 
 | Argument | Default | Purpose |
 | --- | --- | --- |
+| `RFFMPEG_URL` | `https://raw.githubusercontent.com/joshuaboniface/rffmpeg/master/rffmpeg` | Where the server image fetches the `rffmpeg` script from at build time. Server image only. |
 | `JELLYFIN_VERSION` | `latest` | Jellyfin release to build against. CI always passes the version it resolved from upstream; the default only applies to a local `docker build` with no `--build-arg`. |
 | `IGC_VERSION`, `NEO_VERSION`, `GMM_VERSION`, `LEVEL_ZERO_VERSION` | pinned in the Dockerfiles | The Intel compute-runtime release train. Installed only when newer than what the base image already has - see [ADR-0004](../adr/0004-intel-driver-install-or-skip.md). |
