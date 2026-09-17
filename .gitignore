@@ -6,3 +6,11 @@
 # Agent workflow artifacts - local only, never published with the project
 .superpowers/
 docs/superpowers/
+
+# Local-only working files, never published with the project
+CLAUDE.md
+.claude/*
+!.claude/*.json
+scratch/
+memory/
+MEMORY.md

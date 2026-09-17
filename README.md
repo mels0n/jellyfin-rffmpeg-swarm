@@ -272,7 +272,7 @@ Nothing secret is committed to this repository or baked into either image.
 -   [How-to: manual node setup](docs/how-to/manual-node-setup.md)
 -   [Reference: environment variables](docs/reference/environment-variables.md)
 -   [Architecture decision records](docs/adr/README.md) - why the non-obvious choices were
-    made, including the ones an agent or contributor would otherwise helpfully reintroduce
+    made, including the ones a contributor would otherwise helpfully reintroduce
 
 ## Credits
 
