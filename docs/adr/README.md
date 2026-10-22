@@ -11,3 +11,4 @@ immutable once accepted - superseded by a new record rather than edited.
 | [0004](0004-intel-driver-install-or-skip.md) | Install Intel drivers only when newer, never downgrade |
 | [0005](0005-track-upstream-jellyfin-releases.md) | Resolve the Jellyfin version from upstream, not from a file |
 | [0006](0006-image-tagging-scheme.md) | Publish a moving tag per branch, and drop the unstable image |
+| [0007](0007-recording-artwork-from-jellyfins-own-state.md) | Give each recording its own artwork from Jellyfin's own state, without an API key |

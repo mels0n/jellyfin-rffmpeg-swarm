@@ -5,7 +5,8 @@
 #      (comskip_<date>_<recording>.log), where Jellyfin's log retention prunes it.
 #   2. Runs comchap (chapters, default) or comcut (remove commercials) on the EDL.
 #   3. Moves the finished recording into a folder of its own so each recording
-#      shows as its own item with its own artwork. Series recordings are left alone.
+#      shows as its own item, and saves that program's artwork into it.
+#      Series recordings are left alone.
 #
 # Invoked by Jellyfin as: /recording-post-processing.sh "{path}" [comchap|comcut] [extra comchap/comcut flags]
 
@@ -20,6 +21,8 @@ COMSKIP_BIN="${COMSKIP_BIN:-/usr/local/bin/comskip}"
 COMCHAP_BIN="${COMCHAP_BIN:-/usr/local/bin/comchap}"
 COMCUT_BIN="${COMCUT_BIN:-/usr/local/bin/comcut}"
 COMSKIP_INI="${COMSKIP_INI:-/etc/comskip.ini}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+METADATA_HELPER="${METADATA_HELPER:-/recording-metadata.py}"
 
 DATESTAMP=$(date +'%Y-%m-%d')
 LOG_FILE="${LOG_DIR}/post-processing_${DATESTAMP}.log"
@@ -54,7 +57,19 @@ if [ -f "$LOCK_FILE" ]; then
 fi
 
 touch "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
+ART_STAGE="$(mktemp -d "${TEMP_DIR}/artwork.XXXXXX")" || ART_STAGE=""
+trap 'rm -f "$LOCK_FILE"; [ -n "$ART_STAGE" ] && rm -rf "$ART_STAGE"' EXIT
+
+# unique_path <path>: <path>, or "<name> - N.<ext>" if it is taken, so a file
+# is never moved onto another recording.
+unique_path() {
+    local path="$1" n=1
+    while [ -e "$path" ]; do
+        path="${1%.*} - ${n}.${1##*.}"
+        ((n++))
+    done
+    printf '%s' "$path"
+}
 
 log "----------------------------------------------------"
 log "Processing request for: $INPUT_FILE"
@@ -65,6 +80,31 @@ log "Using INI file: $COMSKIP_INI"
 # Final output path. Chaptered output is always MKV.
 OUTPUT_FILE="${INPUT_FILE%.*}.mkv"
 INPUT_BASENAME="$(basename "${INPUT_FILE%.*}")"
+
+# --- Recording facts and artwork ---
+# Jellyfin saves this recording's timer before running this script; it names the
+# channel and guide program (see recording-metadata.py). The guide drops a program
+# soon after it airs, so its artwork is fetched now, before the long comskip run,
+# and placed with the recording at the end.
+CHANNEL_ID=""
+PROGRAM_ID=""
+while IFS='=' read -r key value; do
+    case "$key" in
+        CHANNEL_ID|PROGRAM_ID) printf -v "$key" '%s' "${value%$'\r'}" ;;
+    esac
+done < <("$PYTHON_BIN" "$METADATA_HELPER" timer "$INPUT_FILE" 2>> "$LOG_FILE")
+
+GOT_ART=0
+if [ -z "$PROGRAM_ID" ]; then
+    log "No Jellyfin timer found for this recording; using file name only."
+elif [ -z "$ART_STAGE" ]; then
+    log "Could not create an artwork staging directory in $TEMP_DIR; skipping artwork."
+elif SAVED=$("$PYTHON_BIN" "$METADATA_HELPER" artwork "$PROGRAM_ID" "$ART_STAGE" 2>> "$LOG_FILE"); then
+    GOT_ART=1
+    log "Fetched ${SAVED%$'\r'} image(s) for guide program $PROGRAM_ID."
+else
+    log "Guide program artwork unavailable for $PROGRAM_ID."
+fi
 
 # comchap/comcut mishandle spaces in filenames, so the recording is processed
 # under a temporary space-free name in a known-good directory.
@@ -115,11 +155,23 @@ fi
 
 FINAL_FILE="$INPUT_FILE"
 
+# Puts the unprocessed recording back. While it was away a new recording may
+# have taken its name, or its now-empty folder may have been removed.
+restore_input() {
+    mkdir -p "$(dirname "$INPUT_FILE")"
+    FINAL_FILE="$(unique_path "$INPUT_FILE")"
+    if ! mv "$TEMP_INPUT_FILE" "$FINAL_FILE"; then
+        log "ERROR: could not move the recording back to $FINAL_FILE; it is at $TEMP_INPUT_FILE."
+        rm -f "${TEMP_INPUT_FILE%.*}".{edl,log,logo.txt,txt,ffmeta}
+        exit 1
+    fi
+}
+
 if [ ! -s "$COMSKIP_EDL" ]; then
     # Nothing to chapter or cut. Keep the original recording as is.
     log "No commercials found (comskip exit code $COMSKIP_EXIT). Original file is unchanged."
     rm -f "${TEMP_INPUT_FILE%.*}".{edl,log,logo.txt,txt}
-    mv "$TEMP_INPUT_FILE" "$INPUT_FILE"
+    restore_input
     EXIT_CODE=0
 else
     case "$COMMAND" in
@@ -137,13 +189,17 @@ else
 
     if [ $EXIT_CODE -eq 0 ] && [ -s "$TEMP_OUTPUT_FILE" ]; then
         log "$COMMAND successful. Moving processed file to final destination."
-        mv "$TEMP_OUTPUT_FILE" "$OUTPUT_FILE"
+        # A re-recorded program can share this name with an earlier recording
+        # that is already an .mkv here; never replace it.
+        mkdir -p "$(dirname "$OUTPUT_FILE")"
+        FINAL_FILE="$(unique_path "$OUTPUT_FILE")"
+        [ "$FINAL_FILE" != "$OUTPUT_FILE" ] && log "$OUTPUT_FILE already exists; saving as $FINAL_FILE."
+        mv "$TEMP_OUTPUT_FILE" "$FINAL_FILE"
         rm -f "$TEMP_INPUT_FILE"
-        FINAL_FILE="$OUTPUT_FILE"
     else
         log "ERROR: $COMMAND failed or created an empty file. Original file is unchanged."
         rm -f "$TEMP_OUTPUT_FILE"
-        mv "$TEMP_INPUT_FILE" "$INPUT_FILE"
+        restore_input
     fi
     # comchap/comcut normally remove these; make sure nothing is left behind.
     rm -f "${TEMP_INPUT_FILE%.*}".{edl,log,logo.txt,txt,ffmeta}
@@ -157,48 +213,77 @@ fi
 
 # --- Per-recording folder ---
 # Jellyfin records every non-series program of the same name into one shared
-# folder (<root>/<program name>/), so they show as one item with one poster.
-# Move the finished recording, its .nfo, and the artwork Jellyfin copied in at
-# recording start into a folder of its own. Series recordings (Season folders)
-# keep Jellyfin's layout.
+# folder (<root>/<program name>/), so they show as one item with one poster,
+# and copies each recording's artwork into that folder when it starts,
+# overwriting the previous recording's. Move the finished recording and its
+# .nfo into a folder of its own and give it its own program's artwork from the
+# guide. The shared folder's copy is never used: it cannot tell whose it is.
+# Series recordings (Season folders) keep Jellyfin's layout; their artwork is
+# already saved per recording.
 PARENT_DIR="$(dirname "$FINAL_FILE")"
 PARENT_NAME="$(basename "$PARENT_DIR")"
 
+# Programs airing at the same time are on different channels, so the channel
+# makes the folder unique even when two recordings share a name and start time.
+FOLDER_NAME="$INPUT_BASENAME"
+if [ -n "$CHANNEL_ID" ]; then
+    FOLDER_NAME="${INPUT_BASENAME} [$(printf '%s' "$CHANNEL_ID" | tr -c 'A-Za-z0-9_.-' '_')]"
+fi
+# Folders this script may already have made for this recording, with or without
+# the channel and with or without a " (N)" suffix (unquoted: these are regexes).
+OWN_FOLDER_SUFFIX=' \[[^]]*\]( \([0-9]+\))?$'
+NUMBER_SUFFIX=' \([0-9]+\)$'
+
 if [ ! -f "$FINAL_FILE" ]; then
     log "Final file not found; skipping folder move: $FINAL_FILE"
-elif [ "$PARENT_NAME" = "$INPUT_BASENAME" ]; then
+elif [ "$PARENT_NAME" = "$FOLDER_NAME" ] || [ "$PARENT_NAME" = "$INPUT_BASENAME" ] \
+        || [[ "$PARENT_NAME" =~ ^"$INPUT_BASENAME"$OWN_FOLDER_SUFFIX ]] \
+        || [[ "$PARENT_NAME" =~ ^"$INPUT_BASENAME"$NUMBER_SUFFIX ]]; then
     log "Recording already in its own folder."
 elif [[ "$PARENT_NAME" =~ ^[Ss]eason ]] || [ -f "$PARENT_DIR/tvshow.nfo" ] || [ -f "$(dirname "$PARENT_DIR")/tvshow.nfo" ]; then
     log "Series recording; leaving folder layout to Jellyfin."
 else
     if [ "$PARENT_DIR" = "$LIVETV_ROOT" ]; then
-        DEST_DIR="${LIVETV_ROOT}/${INPUT_BASENAME}"
+        DEST_BASE="${LIVETV_ROOT}/${FOLDER_NAME}"
         SHARED_FOLDER=""
     else
-        DEST_DIR="$(dirname "$PARENT_DIR")/${INPUT_BASENAME}"
+        DEST_BASE="$(dirname "$PARENT_DIR")/${FOLDER_NAME}"
         SHARED_FOLDER="$PARENT_DIR"
     fi
 
-    mkdir -p "$DEST_DIR"
-    mv "$FINAL_FILE" "$DEST_DIR/"
+    # Never merge into a folder that already holds another recording.
+    DEST_DIR="$DEST_BASE"
+    n=2
+    while [ -e "$DEST_DIR" ] && { [ ! -d "$DEST_DIR" ] || [ -n "$(ls -A "$DEST_DIR")" ]; }; do
+        DEST_DIR="${DEST_BASE} (${n})"
+        ((n++))
+    done
+
+    if ! mkdir -p "$DEST_DIR" || ! mv "$FINAL_FILE" "$DEST_DIR/"; then
+        log "ERROR: could not move the recording to $DEST_DIR; leaving it at $FINAL_FILE."
+        rmdir "$DEST_DIR" 2>/dev/null
+        exit 0
+    fi
     # Sidecars written by Jellyfin for this recording (.nfo, -thumb.jpg, ...).
+    # Videos are skipped: a same-name video left here is another recording.
     for f in "$PARENT_DIR/$INPUT_BASENAME".* "$PARENT_DIR/$INPUT_BASENAME"-*; do
+        case "${f,,}" in *.ts|*.mkv|*.mp4|*.m4v|*.avi) continue ;; esac
         [ -e "$f" ] && mv "$f" "$DEST_DIR/"
     done
-    if [ -n "$SHARED_FOLDER" ]; then
-        # Artwork Jellyfin copied into the shared folder belongs to the most recently
-        # started recording of this program. Take it only when no other recording is
-        # still in the folder; otherwise it is the sibling's.
-        if ! compgen -G "$SHARED_FOLDER/*.ts" >/dev/null && ! compgen -G "$SHARED_FOLDER/*.mkv" >/dev/null; then
-            for f in "$SHARED_FOLDER"/poster.* "$SHARED_FOLDER"/fanart.* "$SHARED_FOLDER"/landscape.* "$SHARED_FOLDER"/logo.*; do
-                [ -e "$f" ] && mv "$f" "$DEST_DIR/"
-            done
-        else
-            log "Another recording is still in $SHARED_FOLDER; leaving its artwork in place."
-        fi
-        rmdir "$SHARED_FOLDER" 2>/dev/null && log "Removed empty shared folder: $SHARED_FOLDER"
-    fi
     log "Moved recording to its own folder: $DEST_DIR"
+
+    if [ "$GOT_ART" = "1" ]; then
+        for f in "$ART_STAGE"/*; do
+            [ -e "$f" ] && mv "$f" "$DEST_DIR/"
+        done
+    fi
+
+    if [ -n "$SHARED_FOLDER" ]; then
+        # Once no recording is left in the shared folder, its artwork is stale.
+        "$PYTHON_BIN" "$METADATA_HELPER" clean-shared "$SHARED_FOLDER" 2>> "$LOG_FILE" | while read -r line; do
+            log "Removed empty shared folder: ${line#removed }"
+        done
+    fi
 fi
 
 exit 0
