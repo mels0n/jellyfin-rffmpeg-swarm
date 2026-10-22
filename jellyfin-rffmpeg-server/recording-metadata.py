@@ -20,7 +20,7 @@ Usage:
 
   recording-metadata.py clean-shared <folder>
       Removes the artwork Jellyfin copied into a shared program folder, and
-      then the folder, once no recording (.ts, .mkv or .nfo) is left in it.
+      then the folder, once nothing but that artwork is left in it.
 
 Paths are overridable for testing: RECMETA_CONFIG_DIR (default /config), or
 individually RECMETA_TIMERS_FILE, RECMETA_JELLYFIN_DB, RECMETA_NETWORK_CONFIG,
@@ -45,7 +45,6 @@ NETWORK_CONFIG = os.environ.get("RECMETA_NETWORK_CONFIG", os.path.join(CONFIG_DI
 # Image type -> file name, matching Jellyfin's naming for non-series recordings.
 IMAGE_NAMES = (("Primary", "poster"), ("Thumb", "landscape"), ("Backdrop", "fanart"), ("Logo", "logo"))
 EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
-RECORDING_EXTENSIONS = (".ts", ".mkv", ".nfo")
 
 # Per-request socket timeout and a budget for the whole fetch.
 REQUEST_TIMEOUT = 20
@@ -120,6 +119,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def read_within(resp, deadline):
+    """The response body, giving up once the fetch budget is used up."""
+    chunks = []
+    while True:
+        if time.monotonic() > deadline:
+            raise TimeoutError("fetch budget used up mid-download")
+        chunk = resp.read(65536)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
 def artwork_command(program_id, dest_dir):
     if not os.path.isdir(dest_dir):
         print(f"artwork destination is not a directory: {dest_dir!r}", file=sys.stderr)
@@ -147,12 +158,12 @@ def artwork_command(program_id, dest_dir):
         try:
             with opener.open(url, timeout=REQUEST_TIMEOUT) as resp:
                 content_type = resp.headers.get_content_type()
-                data = resp.read()
+                data = read_within(resp, deadline)
         except urllib.error.HTTPError as e:
             if e.code != 404:  # 404 = the program has no image of this type
                 print(f"{image_type}: HTTP {e.code}", file=sys.stderr)
             continue
-        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError) as e:
             print(f"{image_type}: {type(e).__name__}: {e}", file=sys.stderr)
             continue
         ext = EXTENSIONS.get(content_type)
@@ -175,12 +186,14 @@ def clean_shared_command(folder):
         entries = os.listdir(folder)
     except OSError:
         return 0
-    if any(os.path.splitext(e)[1].lower() in RECORDING_EXTENSIONS for e in entries):
-        return 0  # another recording still uses this folder
     stems = {name for _, name in IMAGE_NAMES}
+    if any(os.path.splitext(e)[0] not in stems for e in entries):
+        return 0  # anything besides the artwork means the folder is still in use
     for e in entries:
-        if os.path.splitext(e)[0] in stems:
+        try:
             os.remove(os.path.join(folder, e))
+        except OSError as err:
+            print(f"could not remove {e}: {err}", file=sys.stderr)
     try:
         os.rmdir(folder)
         print(f"removed {folder}")

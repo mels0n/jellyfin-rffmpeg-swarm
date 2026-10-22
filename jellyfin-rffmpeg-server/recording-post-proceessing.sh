@@ -160,7 +160,10 @@ FINAL_FILE="$INPUT_FILE"
 restore_input() {
     mkdir -p "$(dirname "$INPUT_FILE")"
     FINAL_FILE="$(unique_path "$INPUT_FILE")"
-    mv "$TEMP_INPUT_FILE" "$FINAL_FILE"
+    if ! mv "$TEMP_INPUT_FILE" "$FINAL_FILE"; then
+        log "ERROR: could not move the recording back to $FINAL_FILE; it is at $TEMP_INPUT_FILE."
+        exit 1
+    fi
 }
 
 if [ ! -s "$COMSKIP_EDL" ]; then
@@ -257,10 +260,13 @@ else
 
     if ! mkdir -p "$DEST_DIR" || ! mv "$FINAL_FILE" "$DEST_DIR/"; then
         log "ERROR: could not move the recording to $DEST_DIR; leaving it at $FINAL_FILE."
+        rmdir "$DEST_DIR" 2>/dev/null
         exit 0
     fi
     # Sidecars written by Jellyfin for this recording (.nfo, -thumb.jpg, ...).
+    # Videos are skipped: a same-name video left here is another recording.
     for f in "$PARENT_DIR/$INPUT_BASENAME".* "$PARENT_DIR/$INPUT_BASENAME"-*; do
+        case "$f" in *.ts|*.mkv|*.mp4|*.m4v|*.avi) continue ;; esac
         [ -e "$f" ] && mv "$f" "$DEST_DIR/"
     done
     log "Moved recording to its own folder: $DEST_DIR"

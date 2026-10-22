@@ -305,5 +305,26 @@ run "$SHARED/$LONG.ts" 2>/dev/null
 check "16: recording left in place" [ -f "$SHARED/$LONG.mkv" ]
 check "16: error logged" log_has "ERROR: could not move the recording"
 
+# 17. A same-name video already in the shared folder is another recording: the
+#     processed file is renamed around it and it is not moved along.
+new_case
+SHARED="$LIVETV_ROOT/$SHOW"
+mkdir -p "$SHARED"; echo "other recording" > "$SHARED/$A_NAME.mkv"
+record "$SHARED/$A_NAME.ts"
+completed_timer hdhr_7 "$SHARED/$A_NAME.ts"
+run "$SHARED/$A_NAME.ts"
+check "17: other recording left in place" has_content "$SHARED/$A_NAME.mkv" "other recording"
+check "17: this recording moved under a new name" [ -f "$LIVETV_ROOT/$A_NAME [hdhr_7]/$A_NAME - 1.mkv" ]
+
+# 18. Any file besides the artwork keeps the shared folder in use.
+new_case
+SHARED="$LIVETV_ROOT/$SHOW"
+mkdir -p "$SHARED"; echo art > "$SHARED/poster.jpg"; echo video > "$SHARED/clip.mp4"
+"$PYTHON_BIN" "$HELPER" clean-shared "$SHARED"
+check "18: art kept while another file is there" has_content "$SHARED/poster.jpg" "art"
+rm "$SHARED/clip.mp4"
+"$PYTHON_BIN" "$HELPER" clean-shared "$SHARED" >/dev/null
+check "18: folder removed once only art is left" [ ! -e "$SHARED" ]
+
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
