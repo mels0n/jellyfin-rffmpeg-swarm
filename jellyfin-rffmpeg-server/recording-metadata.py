@@ -3,28 +3,28 @@
 
 Before running the post-processor, Jellyfin saves the recording's timer in
 timers.json as Completed, with RecordingPath set to the path it hands the
-post-processor (completed timers are kept). That timer names the guide program
+post-processor. That timer names the channel and the guide program
 (ProgramId), which Jellyfin looks up by ExternalId to find the program's
 artwork. This helper does the same lookups, read-only, so the post-processor
 needs no API key and nothing leaves the host.
 
 Usage:
   recording-metadata.py timer <recording path>
-      Prints KEY=VALUE lines for the timer that produced <recording path>:
-        CHANNEL_ID, PROGRAM_ID, START_DATE
-        OWNS_SHARED_ART  1 if this recording started strictly after every other
-                         recording written into its folder, so the artwork
-                         Jellyfin copied into that folder is this recording's;
-                         else 0
-      Exits 1 (prints nothing) when no timer matches.
+      Prints CHANNEL_ID=... and PROGRAM_ID=... for the timer that produced
+      <recording path>. Exits 1 (prints nothing) when no timer matches.
 
   recording-metadata.py artwork <program id> <destination dir>
       Saves the program's Primary, Thumb, Backdrop and Logo images as poster,
       landscape, fanart and logo (the names Jellyfin uses for non-series
       recordings). Prints the number of images saved. Exits 1 when none were.
 
-Paths are overridable for testing: TIMERS_FILE, JELLYFIN_DB, NETWORK_CONFIG,
-JELLYFIN_URL.
+  recording-metadata.py clean-shared <folder>
+      Removes the artwork Jellyfin copied into a shared program folder, and
+      then the folder, once no recording (.ts, .mkv or .nfo) is left in it.
+
+Paths are overridable for testing: RECMETA_CONFIG_DIR (default /config), or
+individually RECMETA_TIMERS_FILE, RECMETA_JELLYFIN_DB, RECMETA_NETWORK_CONFIG,
+RECMETA_JELLYFIN_URL.
 """
 
 import http.client
@@ -36,15 +36,27 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
 
-TIMERS_FILE = os.environ.get("TIMERS_FILE", "/config/data/livetv/timers.json")
-JELLYFIN_DB = os.environ.get("JELLYFIN_DB", "/config/data/jellyfin.db")
-NETWORK_CONFIG = os.environ.get("NETWORK_CONFIG", "/config/config/network.xml")
+CONFIG_DIR = os.environ.get("RECMETA_CONFIG_DIR", "/config")
+TIMERS_FILE = os.environ.get("RECMETA_TIMERS_FILE", os.path.join(CONFIG_DIR, "data/livetv/timers.json"))
+JELLYFIN_DB = os.environ.get("RECMETA_JELLYFIN_DB", os.path.join(CONFIG_DIR, "data/jellyfin.db"))
+NETWORK_CONFIG = os.environ.get("RECMETA_NETWORK_CONFIG", os.path.join(CONFIG_DIR, "config/network.xml"))
 
 # Image type -> file name, matching Jellyfin's naming for non-series recordings.
 IMAGE_NAMES = (("Primary", "poster"), ("Thumb", "landscape"), ("Backdrop", "fanart"), ("Logo", "logo"))
 EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
+RECORDING_EXTENSIONS = (".ts", ".mkv", ".nfo")
+
+# Per-request socket timeout and a budget for the whole fetch.
+REQUEST_TIMEOUT = 20
+FETCH_BUDGET = 60
+
+
+def clean_field(value):
+    """A timer field as a single-line string, or "" if it is anything else."""
+    if not isinstance(value, str) or re.search(r"[\x00-\x1f\x7f]", value):
+        return ""
+    return value
 
 
 def load_timers():
@@ -54,72 +66,27 @@ def load_timers():
             with open(TIMERS_FILE, encoding="utf-8-sig") as f:
                 timers = json.load(f)
             return timers if isinstance(timers, list) else []
-        except json.JSONDecodeError:
+        except ValueError:  # JSONDecodeError, or a multi-byte character cut in half
             if attempt:
                 raise
             time.sleep(1)
     return []
 
 
-def name_key(name):
-    """Program name reduced to letters and digits. Jellyfin replaces characters
-    that are invalid in file names when it builds the folder, so names that
-    differ only in punctuation can share a folder; matching loosely errs toward
-    "not owned"."""
-    return re.sub(r"[\W_]+", "", name or "").casefold()
-
-
-def actual_start(t):
-    """When the recording began: the program start minus its pre-padding."""
-    value = re.sub(r"(\.\d{6})\d+", r"\1", t.get("StartDate") or "").replace("Z", "+00:00")
-    try:
-        start = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return start - timedelta(seconds=t.get("PrePaddingSeconds") or 0)
-
-
 def timer_command(recording_path):
-    timers = load_timers()
-    timer = next((t for t in timers if t.get("RecordingPath") == recording_path), None)
+    timer = next(
+        (t for t in load_timers() if isinstance(t, dict) and t.get("RecordingPath") == recording_path),
+        None,
+    )
     if timer is None:
         return 1
-
-    # Jellyfin copies a program's artwork into the shared folder when its
-    # recording starts, overwriting what is there, so the art belongs to the
-    # recording that started last. Siblings: finished recordings in the same
-    # folder (completed timers are kept) and same-name recordings still in
-    # progress (their RecordingPath is only set when they finish).
-    folder = os.path.dirname(recording_path)
-    name = name_key(timer.get("Name"))
-    siblings = [
-        t for t in timers
-        if t.get("Id") != timer.get("Id")
-        and (
-            (t.get("Status") == "Completed" and os.path.dirname(t.get("RecordingPath") or "") == folder)
-            or (t.get("Status") == "InProgress" and name_key(t.get("Name")) == name)
-            # A failed recording waits as New before retrying; its art is still here.
-            or (t.get("Status") == "New" and (t.get("RetryCount") or 0) > 0 and name_key(t.get("Name")) == name)
-        )
-    ]
-    mine = actual_start(timer)
-    # Any doubt (unknown start, a tie, a later start) means the art is not ours.
-    owns = mine is not None and all(
-        (s := actual_start(t)) is not None and s < mine for t in siblings
-    )
-
-    for key, value in (
-        ("CHANNEL_ID", timer.get("ChannelId") or ""),
-        ("PROGRAM_ID", timer.get("ProgramId") or ""),
-        ("START_DATE", timer.get("StartDate") or ""),
-        ("OWNS_SHARED_ART", "1" if owns else "0"),
-    ):
-        print(f"{key}={value}")
+    print(f"CHANNEL_ID={clean_field(timer.get('ChannelId'))}")
+    print(f"PROGRAM_ID={clean_field(timer.get('ProgramId'))}")
     return 0
 
 
 def jellyfin_url():
-    url = os.environ.get("JELLYFIN_URL")
+    url = os.environ.get("RECMETA_JELLYFIN_URL")
     if url:
         return url.rstrip("/")
     port, base = "8096", ""
@@ -148,7 +115,15 @@ def program_item_id(program_id):
     return str(row[0]) if row else None
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def artwork_command(program_id, dest_dir):
+    if not os.path.isdir(dest_dir):
+        print(f"artwork destination is not a directory: {dest_dir!r}", file=sys.stderr)
+        return 1
     try:
         item_id = program_item_id(program_id)
     except sqlite3.Error as e:
@@ -158,18 +133,31 @@ def artwork_command(program_id, dest_dir):
         print("program not in guide", file=sys.stderr)
         return 1
 
+    # Loopback only: no proxy from the environment, no redirects to other hosts.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
     base = jellyfin_url()
+    deadline = time.monotonic() + FETCH_BUDGET
     saved = 0
     for image_type, name in IMAGE_NAMES:
+        if time.monotonic() > deadline:
+            print(f"{image_type}: skipped, fetch budget used up", file=sys.stderr)
+            continue
         # Image requests need no authentication.
         url = f"{base}/Items/{item_id}/Images/{image_type}"
         try:
-            with urllib.request.urlopen(url, timeout=30) as resp:
-                ext = EXTENSIONS.get(resp.headers.get_content_type())
+            with opener.open(url, timeout=REQUEST_TIMEOUT) as resp:
+                content_type = resp.headers.get_content_type()
                 data = resp.read()
-        except (urllib.error.URLError, http.client.HTTPException, OSError):
-            continue  # 404 = the program has no image of this type
+        except urllib.error.HTTPError as e:
+            if e.code != 404:  # 404 = the program has no image of this type
+                print(f"{image_type}: HTTP {e.code}", file=sys.stderr)
+            continue
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            print(f"{image_type}: {type(e).__name__}: {e}", file=sys.stderr)
+            continue
+        ext = EXTENSIONS.get(content_type)
         if not ext or not data:
+            print(f"{image_type}: unusable response ({content_type}, {len(data)} bytes)", file=sys.stderr)
             continue
         for old in os.listdir(dest_dir):
             if os.path.splitext(old)[0] == name:
@@ -182,11 +170,32 @@ def artwork_command(program_id, dest_dir):
     return 0 if saved else 1
 
 
+def clean_shared_command(folder):
+    try:
+        entries = os.listdir(folder)
+    except OSError:
+        return 0
+    if any(os.path.splitext(e)[1].lower() in RECORDING_EXTENSIONS for e in entries):
+        return 0  # another recording still uses this folder
+    stems = {name for _, name in IMAGE_NAMES}
+    for e in entries:
+        if os.path.splitext(e)[0] in stems:
+            os.remove(os.path.join(folder, e))
+    try:
+        os.rmdir(folder)
+        print(f"removed {folder}")
+    except OSError:
+        pass  # something else is in it
+    return 0
+
+
 def main(argv):
     if len(argv) == 3 and argv[1] == "timer":
         return timer_command(argv[2])
     if len(argv) == 4 and argv[1] == "artwork":
         return artwork_command(argv[2], argv[3])
+    if len(argv) == 3 and argv[1] == "clean-shared":
+        return clean_shared_command(argv[2])
     print(__doc__, file=sys.stderr)
     return 2
 
