@@ -319,7 +319,7 @@ check "17: this recording moved under a new name" [ -f "$LIVETV_ROOT/$A_NAME [hd
 # 18. Any file besides the artwork keeps the shared folder in use.
 new_case
 SHARED="$LIVETV_ROOT/$SHOW"
-mkdir -p "$SHARED"; echo art > "$SHARED/poster.jpg"; echo video > "$SHARED/clip.mp4"
+mkdir -p "$SHARED"; echo art > "$SHARED/poster.jpg"; echo art > "$SHARED/Logo.PNG"; echo video > "$SHARED/clip.mp4"
 "$PYTHON_BIN" "$HELPER" clean-shared "$SHARED"
 check "18: art kept while another file is there" has_content "$SHARED/poster.jpg" "art"
 rm "$SHARED/clip.mp4"

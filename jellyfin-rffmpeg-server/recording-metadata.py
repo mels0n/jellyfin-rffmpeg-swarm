@@ -187,7 +187,7 @@ def clean_shared_command(folder):
     except OSError:
         return 0
     stems = {name for _, name in IMAGE_NAMES}
-    if any(os.path.splitext(e)[0] not in stems for e in entries):
+    if any(os.path.splitext(e)[0].lower() not in stems for e in entries):
         return 0  # anything besides the artwork means the folder is still in use
     for e in entries:
         try:

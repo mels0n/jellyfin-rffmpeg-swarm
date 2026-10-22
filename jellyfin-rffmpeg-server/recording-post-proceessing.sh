@@ -162,6 +162,7 @@ restore_input() {
     FINAL_FILE="$(unique_path "$INPUT_FILE")"
     if ! mv "$TEMP_INPUT_FILE" "$FINAL_FILE"; then
         log "ERROR: could not move the recording back to $FINAL_FILE; it is at $TEMP_INPUT_FILE."
+        rm -f "${TEMP_INPUT_FILE%.*}".{edl,log,logo.txt,txt,ffmeta}
         exit 1
     fi
 }
@@ -266,7 +267,7 @@ else
     # Sidecars written by Jellyfin for this recording (.nfo, -thumb.jpg, ...).
     # Videos are skipped: a same-name video left here is another recording.
     for f in "$PARENT_DIR/$INPUT_BASENAME".* "$PARENT_DIR/$INPUT_BASENAME"-*; do
-        case "$f" in *.ts|*.mkv|*.mp4|*.m4v|*.avi) continue ;; esac
+        case "${f,,}" in *.ts|*.mkv|*.mp4|*.m4v|*.avi) continue ;; esac
         [ -e "$f" ] && mv "$f" "$DEST_DIR/"
     done
     log "Moved recording to its own folder: $DEST_DIR"
