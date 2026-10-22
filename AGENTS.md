@@ -17,6 +17,9 @@ step rather than trying to factor them out.
 - Server image: `docker build --build-arg JELLYFIN_VERSION=<tag> -t jellyfin-rffmpeg-server ./jellyfin-rffmpeg-server`
 - Worker image: `docker build --build-arg JELLYFIN_VERSION=<tag> -t rffmpeg-worker ./rffmpeg-worker`
 - Local stack: `docker compose -f docker-compose.dev.yml up`
+- `tests/test-post-processing.sh` covers the DVR post-processor's folders and artwork
+  (stubbed comskip, fixture `timers.json` and database, local image server). Needs
+  bash and python3; it runs inside the server image too.
 - `tests/test-discovery.sh` is stale and fails. It stubs a `getent` lookup the
   discovery daemon no longer performs (see ADR-0003). Nothing runs it in CI. Fix
   the harness before trusting it as a regression gate.

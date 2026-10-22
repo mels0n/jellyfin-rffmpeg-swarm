@@ -142,7 +142,8 @@ RUN \
 COPY --chown=root:root rffmpeg-discovery.sh /rffmpeg-discovery.sh
 COPY --chown=root:root entrypoint.sh /entrypoint.sh
 COPY --chown=root:root recording-post-proceessing.sh /recording-post-processing.sh
-RUN chmod +x /rffmpeg-discovery.sh /entrypoint.sh /recording-post-processing.sh && \
+COPY --chown=root:root recording-metadata.py /recording-metadata.py
+RUN chmod +x /rffmpeg-discovery.sh /entrypoint.sh /recording-post-processing.sh /recording-metadata.py && \
     (crontab -l 2>/dev/null; echo "0 0 * * * /usr/local/bin/rffmpeg clear") | crontab -
 
 # ==============================================================================
