@@ -1,23 +1,19 @@
-FROM debian:bookworm
+# Same upstream image as the server, so the worker runs exactly the
+# jellyfin-ffmpeg build (and the OS it links against) that the server emits
+# arguments for. Only ffmpeg is used here: the ENTRYPOINT below replaces
+# upstream's, so Jellyfin itself never runs in this image.
 
 # Fallback for a local `docker build` with no --build-arg; CI always passes the
 # resolved upstream version explicitly.
 ARG JELLYFIN_VERSION=latest
+FROM docker.io/jellyfin/jellyfin:${JELLYFIN_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
-    apt-get -y install --no-install-recommends curl gnupg locales openssh-server nfs-common netbase iputils-ping fontconfig ca-certificates && \
+    apt-get -y install --no-install-recommends locales openssh-server nfs-common netbase iputils-ping fontconfig ca-certificates && \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && \
     locale-gen && \
-    # Add jellyfin repo using the modern signed-by method
-    mkdir -p /etc/apt/keyrings && \
-    curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg && \
-    echo "deb [arch=$( dpkg --print-architecture ) signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian bookworm main" > /etc/apt/sources.list.d/jellyfin.list && \
-    # Install jellyfin-ffmpeg7 from the new repo and clean up
-    apt-get update && \ 
-    apt-get install -y --no-install-recommends jellyfin-ffmpeg7 && \ 
-    apt-get purge -y --auto-remove gnupg curl && \ 
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -151,9 +147,9 @@ RUN chmod +x /entrypoint.sh /healthcheck.sh
 HEALTHCHECK --interval=30s --timeout=15s --retries=3 --start-period=600s \
   CMD ["/healthcheck.sh"]
 
-# The worker tracks jellyfin-ffmpeg7 from the Jellyfin apt repo, not a pinned
-# Jellyfin release, so JELLYFIN_VERSION only records which server release this
-# image was built to pair with. Kept last so it never busts the build cache.
+# Records the Jellyfin release whose image this worker is built from (and so
+# the jellyfin-ffmpeg it carries). Kept last so it never busts the build cache.
+ARG JELLYFIN_VERSION
 LABEL org.opencontainers.image.version="${JELLYFIN_VERSION}"
 
 ENTRYPOINT ["/entrypoint.sh"]

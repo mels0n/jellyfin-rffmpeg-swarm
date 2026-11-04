@@ -40,6 +40,9 @@ particular:
   image already ships.
 - **0005**: there is no version file. The Jellyfin version is resolved from
   upstream at build time. Do not reintroduce `versions.env`.
+- **0008**: the worker builds FROM the same `jellyfin/jellyfin` tag as the
+  server. Do not move it to a slim base or a separately pinned
+  `jellyfin-ffmpeg`.
 
 Any new non-obvious choice gets its own numbered ADR in the same directory.
 
@@ -63,4 +66,5 @@ tracked or if a public document references internal tooling.
   working-tree state.
 - **Deploys are not automatic.** Publishing an image does not move any node. A
   production stack should pin `:<version>@sha256:...`, so it only moves when its
-  stack file does.
+  stack file does. Move the server and worker pins together, on the same
+  Jellyfin version.

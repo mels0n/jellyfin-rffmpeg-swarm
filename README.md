@@ -13,7 +13,7 @@ You will realize the number of transcoded streams you may need is more than one 
 The architecture is composed of two primary services that communicate over a Docker overlay network:
 
 -   **`jellyfin-server`**: The main Jellyfin instance. It does not perform transcodes itself but instead delegates them to available workers via SSH using `rffmpeg`. This service also runs an integrated **NFS server** to share the `/transcodes` and `/cache` directories, ensuring all nodes have access to the same temporary files. Workers are discovered automatically within seconds by hostname convention plus an SSH health probe (see "Worker Discovery" below). **Logs for `rffmpeg` are automatically viewable in the Jellyfin Dashboard under the "Logs" section.**
--   **`transcode-worker`**: The workhorses of the cluster. These are lightweight, scalable containers that listen for transcoding jobs from the server. You can add or remove workers on-the-fly to match your expected transcoding load.
+-   **`transcode-worker`**: The workhorses of the cluster. These are scalable containers that run no Jellyfin of their own, only sshd and FFmpeg, and listen for transcoding jobs from the server. You can add or remove workers on-the-fly to match your expected transcoding load.
 
 ## Host Setup Guide
 
@@ -88,7 +88,9 @@ What triggers a build:
 The compose files track the moving tags (`:latest` / `:dev`), so a `docker service update
 --force` picks up a new build. Pin a `:<version>` or a digest instead if you want to control
 exactly when a node moves - which is the safer choice for production, since new Jellyfin
-releases are published here without review.
+releases are published here without review. Pin the server and worker to the same Jellyfin
+version and move both pins together: the worker runs the FFmpeg the server's release ships,
+and a server on a newer release can send options an older worker rejects.
 
 ### 1. Prepare Deployment Files
 Create a directory for your stack and download the compose file.
