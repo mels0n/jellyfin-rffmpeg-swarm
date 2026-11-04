@@ -90,7 +90,7 @@ The compose files track the moving tags (`:latest` / `:dev`), so a `docker servi
 exactly when a node moves - which is the safer choice for production, since new Jellyfin
 releases are published here without review. Pin the server and worker to the same Jellyfin
 version and move both pins together: the worker runs the FFmpeg the server's release ships,
-and a server on a newer release sends options an older worker rejects.
+and a server on a newer release can send options an older worker rejects.
 
 ### 1. Prepare Deployment Files
 Create a directory for your stack and download the compose file.

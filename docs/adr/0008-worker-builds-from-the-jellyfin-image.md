@@ -8,7 +8,8 @@ The worker was a plain `debian:bookworm` image that installed `jellyfin-ffmpeg7`
 Jellyfin apt repository, while the server image is built from `jellyfin/jellyfin`. The
 server's base has been Debian Trixie since Jellyfin 12.x, and with 12.4 it carries
 `jellyfin-ffmpeg` 8. The server then began passing options that FFmpeg 7.1.4 does not know
-(`-readrate_catchup`), so jobs carrying them failed on the workers with exit code 8. The server decides the FFmpeg arguments, so the FFmpeg that executes them has
+(`-readrate_catchup`), so jobs carrying them failed on the workers with exit code 8. The
+server decides the FFmpeg arguments, so the FFmpeg that executes them has
 to be the one the server was built for.
 
 ## Decision
