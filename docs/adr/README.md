@@ -12,3 +12,4 @@ immutable once accepted - superseded by a new record rather than edited.
 | [0005](0005-track-upstream-jellyfin-releases.md) | Resolve the Jellyfin version from upstream, not from a file |
 | [0006](0006-image-tagging-scheme.md) | Publish a moving tag per branch, and drop the unstable image |
 | [0007](0007-recording-artwork-from-jellyfins-own-state.md) | Give each recording its own artwork from Jellyfin's own state, without an API key |
+| [0008](0008-worker-builds-from-the-jellyfin-image.md) | Build the worker from the same Jellyfin image as the server |
